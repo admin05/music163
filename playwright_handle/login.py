@@ -24,6 +24,7 @@ if _PROJECT_ROOT not in sys.path:
 from playwright.sync_api import sync_playwright, Page, Frame
 
 from core import NeteaseClient  # 仅用于本模块内部根据 Cookie 识别 uid
+from playwright_handle.browser import chromium_context_options
 
 logger = logging.getLogger("netease_music")
 
@@ -658,19 +659,21 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
     with sync_playwright() as p:
         # 反检测配置（保守版本，避免破坏页面功能）
         context = p.chromium.launch_persistent_context(
-            user_data_dir=profile_dir,
-            headless=headless,
-            viewport={"width": 1280, "height": 800},
-            # 模拟真实浏览器环境
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            # 容器环境必需参数
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
+            **chromium_context_options(
+                user_data_dir=profile_dir,
+                headless=headless,
+                viewport={"width": 1280, "height": 800},
+                # 模拟真实浏览器环境
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                # 容器环境必需参数
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                ],
+            )
         )
         # 基础反检测脚本
         context.add_init_script("""

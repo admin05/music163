@@ -16,6 +16,7 @@ from typing import Any
 from playwright.sync_api import Frame, Page, sync_playwright
 
 from core import logger
+from playwright_handle.browser import chromium_context_options
 
 MUSICIAN_HOME_URL = "https://music.163.com/musician/artist/home"
 
@@ -131,17 +132,19 @@ def open_vip_right_page_and_listen(
         with sync_playwright() as p:
             # 反检测配置（保守版本）
             context = p.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
-                headless=True,
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                locale="zh-CN",
-                timezone_id="Asia/Shanghai",
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                ],
+                **chromium_context_options(
+                    user_data_dir=profile_dir,
+                    headless=True,
+                    viewport={"width": 1280, "height": 800},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    locale="zh-CN",
+                    timezone_id="Asia/Shanghai",
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                    ],
+                )
             )
             context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -327,17 +330,19 @@ def get_musician_cycle_mission_by_playwright(
         with sync_playwright() as p:
             # 反检测配置（保守版本）
             context = p.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
-                headless=True,
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                locale="zh-CN",
-                timezone_id="Asia/Shanghai",
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                ],
+                **chromium_context_options(
+                    user_data_dir=profile_dir,
+                    headless=True,
+                    viewport={"width": 1280, "height": 800},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    locale="zh-CN",
+                    timezone_id="Asia/Shanghai",
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                    ],
+                )
             )
             context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });

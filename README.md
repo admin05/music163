@@ -20,10 +20,21 @@
 
 ```bash
 python3 -m pip install --target .python-packages pycryptodome==3.23.0 Requests==2.32.5 APScheduler==3.11.0 pyexecjs==1.5.1 playwright==1.57.0
-PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers PYTHONPATH=.python-packages python3 -m playwright install chromium
 ```
 
 这套命令会把依赖安装到项目目录的 `.python-packages/`，不会修改系统 Python，也不需要创建虚拟环境。`arcadia.js` 会自动加载这个目录。
+
+如果 Arcadia 已有系统 Chromium，例如 `/usr/bin/chromium`，在环境变量里配置：
+
+```bash
+CHROME_BIN=/usr/bin/chromium
+```
+
+这样就不需要下载 Playwright 自带浏览器。若没有系统 Chromium，再执行：
+
+```bash
+PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers PYTHONPATH=.python-packages python3 -m playwright install chromium
+```
 
 如需滑块自动识别，可以再尝试安装 `ddddocr`：
 
@@ -68,6 +79,7 @@ SQLITE_DB_PATH=data/netease_music.db
 NETEASE_PHONE=your_phone
 NETEASE_PASSWORD=your_password
 LOGIN_METHOD=playwright
+CHROME_BIN=/usr/bin/chromium
 PLAYWRIGHT_PROFILE_BASEDIR=.playwright_profiles
 PLAYWRIGHT_PROFILE_PER_USER=1
 BARK=your-bark-key
@@ -82,6 +94,7 @@ ARC_BARK_ON_SUCCESS=1
 | `SQLITE_DB_PATH` | `data/netease_music.db` | SQLite 数据库路径，建议持久化 |
 | `NETEASE_PHONE` / `NETEASE_PASSWORD` | `your_phone` / `your_password` | 单账号配置 |
 | `LOGIN_METHOD` | `playwright` | 建议固定为 `playwright`，网页登录更稳 |
+| `CHROME_BIN` | `/usr/bin/chromium` | 系统 Chromium 路径；配置后不需要下载 Playwright 浏览器 |
 | `BARK` | `your-bark-key` | Bark 推送 key；也可以填完整 Bark URL |
 
 #### 推荐参数
@@ -124,7 +137,7 @@ node arcadia.js
 
 `arcadia.js` 会自动设置：
 - `PYTHONPATH=.python-packages`
-- `PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers`
+- 未配置 `CHROME_BIN` 时，自动使用 `PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers`
 
 如果 Arcadia 默认 `python3` 不可用，也可以在 Arcadia 里设置 `PYTHON` 环境变量，让 Node 包装入口调用指定解释器：
 
@@ -208,7 +221,7 @@ ARC_RUN_MODE=daily
 - **Python**：建议 3.12；Arcadia 只有 3.13 时可按上方 `--target .python-packages` 方式安装依赖
 - **SQLite**：Python 标准库自带，无需单独安装服务；数据库文件默认位于 `data/netease_music.db`
 - **Node.js**：推荐安装；用于通过 `execjs` 执行 `checkToken.js` 生成 `checkToken`。若缺少可用的 JS 运行时，音乐人相关接口可能返回 `301 用户未登陆`。
-- **Playwright 浏览器**：使用 `LOGIN_METHOD=playwright` 或运行 `playwright_handle/login.py` 前需执行：`python -m playwright install chromium`
+- **浏览器**：使用 `LOGIN_METHOD=playwright` 时，优先配置 `CHROME_BIN=/usr/bin/chromium`；没有系统 Chromium 时再执行 `python -m playwright install chromium`
 - **ddddocr**：可选依赖，用于增强滑块识别；Python 3.13 安装失败时可以先跳过
 - **Docker**（可选）：容器化部署
 
@@ -233,10 +246,16 @@ pip install -r requirements.txt
 pip install ddddocr==1.5.6
 ```
 
-### 3.（推荐）安装 Playwright 浏览器
+### 3.（推荐）配置浏览器
 `API版基本上已无法使用 `
 
 仅在需要网页登录 / `LOGIN_METHOD=playwright` 时需要：
+
+```bash
+export CHROME_BIN="/usr/bin/chromium"
+```
+
+如果系统没有 Chromium，再执行：
 
 ```bash
 python -m playwright install chromium

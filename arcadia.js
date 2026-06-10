@@ -14,7 +14,9 @@ function buildPythonEnv() {
     extraPaths.push(env.PYTHONPATH);
   }
   env.PYTHONPATH = extraPaths.join(path.delimiter);
-  env.PLAYWRIGHT_BROWSERS_PATH = env.PLAYWRIGHT_BROWSERS_PATH || path.join(projectRoot, ".playwright-browsers");
+  if (!env.CHROME_BIN && !env.PLAYWRIGHT_CHROMIUM_EXECUTABLE) {
+    env.PLAYWRIGHT_BROWSERS_PATH = env.PLAYWRIGHT_BROWSERS_PATH || path.join(projectRoot, ".playwright-browsers");
+  }
   return env;
 }
 
