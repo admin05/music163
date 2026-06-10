@@ -19,11 +19,19 @@
 在 Arcadia 运行环境或 NAS 终端进入项目目录后执行：
 
 ```bash
-python3 -m pip install -r requirements.txt
-python3 -m playwright install chromium
+python3 -m pip install --target .python-packages pycryptodome==3.23.0 Requests==2.32.5 APScheduler==3.11.0 pyexecjs==1.5.1 playwright==1.57.0
+PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers PYTHONPATH=.python-packages python3 -m playwright install chromium
 ```
 
-建议使用 Python 3.12。当前依赖中的 `ddddocr==1.5.6` 不支持 Python 3.13+，如果 Arcadia 默认 `python3` 是 3.13 或更高版本，请在 Arcadia 中把 Python 解释器切到 3.10-3.12，或通过 `PYTHON` 环境变量指定可用解释器后运行 `node arcadia.js`。
+这套命令会把依赖安装到项目目录的 `.python-packages/`，不会修改系统 Python，也不需要创建虚拟环境。`arcadia.js` 会自动加载这个目录。
+
+如需滑块自动识别，可以再尝试安装 `ddddocr`：
+
+```bash
+python3 -m pip install --target .python-packages ddddocr==1.5.6
+```
+
+如果 Arcadia 默认 `python3` 是 3.13，而 `ddddocr` 安装失败，可以先不安装它；基础任务依赖仍可通过 `.python-packages` 加载。若频繁遇到滑块验证码，建议换到 Python 3.10-3.12 后再安装 `ddddocr`。
 
 如使用 `LOGIN_METHOD=api` 可以不安装 Playwright 浏览器，但当前更推荐保留默认的 `playwright`。
 
@@ -114,7 +122,11 @@ python3 arcadia_run.py
 node arcadia.js
 ```
 
-如果 Arcadia 默认 `python3` 不是 Python 3.10-3.12，可以在 Arcadia 里设置 `PYTHON` 环境变量，让 Node 包装入口调用指定解释器：
+`arcadia.js` 会自动设置：
+- `PYTHONPATH=.python-packages`
+- `PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers`
+
+如果 Arcadia 默认 `python3` 不可用，也可以在 Arcadia 里设置 `PYTHON` 环境变量，让 Node 包装入口调用指定解释器：
 
 ```bash
 PYTHON=/path/to/python3.12
@@ -157,7 +169,7 @@ ARC_RUN_MODE=daily
   - Playwright 网页端登录与分享，减少风控与安全验证异常
   - **自动更新cookie**：每次运行，会自动更新 Cookie
   - 支持复用网页 Cookie，降低 `301 用户未登陆`、分享异常概率
-  - 登录流程支持易盾滑块（`ddddocr`）、网络风控文案识别；失败时可在项目根目录 `debug/{手机号}/` 查看截图
+  - 登录流程支持易盾滑块（可选 `ddddocr` 增强）、网络风控文案识别；失败时可在项目根目录 `debug/{手机号}/` 查看截图
 - **任务可靠性提升**：
   - 任务失败自动重试（最多多次尝试）以提高成功率
   - 统一配置文件 `config.py` 集中管理配置项，执行逻辑更加清晰可控
@@ -182,21 +194,22 @@ ARC_RUN_MODE=daily
 
 ## 技术栈
 
-- Python 3.12（推荐与 Docker 一致；最低建议 3.10+）
+- Python 3.10+（推荐 3.12；Arcadia 只有 3.13 时可使用项目内依赖目录方案）
 - Requests、PyCryptodome
 - SQLite（Cookie、任务数据、执行记录，本地文件数据库）
 - APScheduler（定时调度）
 - Playwright + Chromium（网页登录与部分页面能力）
-- ddddocr（易盾滑块辅助识别）
+- ddddocr（可选，易盾滑块辅助识别）
 - pyexecjs + Node.js（`checkToken.js`）
 - Docker（可选）
 
 ## 依赖要求
 
-- **Python**：建议 3.12，需安装 `requirements.txt`
+- **Python**：建议 3.12；Arcadia 只有 3.13 时可按上方 `--target .python-packages` 方式安装依赖
 - **SQLite**：Python 标准库自带，无需单独安装服务；数据库文件默认位于 `data/netease_music.db`
 - **Node.js**：推荐安装；用于通过 `execjs` 执行 `checkToken.js` 生成 `checkToken`。若缺少可用的 JS 运行时，音乐人相关接口可能返回 `301 用户未登陆`。
 - **Playwright 浏览器**：使用 `LOGIN_METHOD=playwright` 或运行 `playwright_handle/login.py` 前需执行：`python -m playwright install chromium`
+- **ddddocr**：可选依赖，用于增强滑块识别；Python 3.13 安装失败时可以先跳过
 - **Docker**（可选）：容器化部署
 
 ## 安装步骤
@@ -212,6 +225,12 @@ cd netease-musician-task
 
 ```bash
 pip install -r requirements.txt
+```
+
+如需增强滑块识别，可选安装：
+
+```bash
+pip install ddddocr==1.5.6
 ```
 
 ### 3.（推荐）安装 Playwright 浏览器

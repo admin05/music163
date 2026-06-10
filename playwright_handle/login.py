@@ -21,7 +21,6 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from ddddocr import DdddOcr
 from playwright.sync_api import sync_playwright, Page, Frame
 
 from core import NeteaseClient  # 仅用于本模块内部根据 Cookie 识别 uid
@@ -360,8 +359,13 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
         return
 
     # 优先使用 ddddocr 的 slide_match（修正参数顺序 + 尺寸校验，避免其内部 OpenCV 断言）
-    # 同时保留 OpenCV 匹配作为兜底方案
-    ocr = DdddOcr(det=False, ocr=False, show_ad=False)
+    # 同时保留 OpenCV 匹配作为兜底方案。ddddocr 在 Python 3.13 上可能不可用，所以延迟导入。
+    ocr = None
+    try:
+        from ddddocr import DdddOcr
+        ocr = DdddOcr(det=False, ocr=False, show_ad=False)
+    except Exception as e:
+        logger.warning(f"[滑块] ddddocr 不可用，将仅使用 OpenCV 兜底匹配：{e}")
     import cv2
     import numpy as np
 
@@ -404,6 +408,8 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
                 # 优先使用 ddddocr 的 slide_match：
                 # 关键点：按照“小图在前、背景在后”的顺序传参，避免其内部 OpenCV 尺寸断言
                 try:
+                    if ocr is None:
+                        raise RuntimeError("ddddocr 不可用")
                     res = ocr.slide_match(slider_bytes, bg_bytes)
                     target_x = float(res["target"][0])
                     logger.info(f"[滑块] ddddocr 识别位移：{target_x:.2f} 像素")

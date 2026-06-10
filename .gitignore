@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 .venv/
 .venv312/
+.python-packages/
+.playwright-browsers/
 .env
 .env.*
 !.env.example

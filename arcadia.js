@@ -5,6 +5,18 @@ const path = require("path");
 
 const projectRoot = __dirname;
 const pythonScript = path.join(projectRoot, "arcadia_run.py");
+const localPackageDir = path.join(projectRoot, ".python-packages");
+
+function buildPythonEnv() {
+  const env = { ...process.env };
+  const extraPaths = [localPackageDir];
+  if (env.PYTHONPATH) {
+    extraPaths.push(env.PYTHONPATH);
+  }
+  env.PYTHONPATH = extraPaths.join(path.delimiter);
+  env.PLAYWRIGHT_BROWSERS_PATH = env.PLAYWRIGHT_BROWSERS_PATH || path.join(projectRoot, ".playwright-browsers");
+  return env;
+}
 
 function barkEndpoint(value) {
   if (/^https?:\/\//.test(value)) return value.replace(/\/$/, "");
@@ -50,7 +62,7 @@ function runWith(command) {
   return new Promise((resolve) => {
     const child = spawn(command, [pythonScript], {
       cwd: projectRoot,
-      env: process.env,
+      env: buildPythonEnv(),
       stdio: "inherit",
     });
     child.on("error", (err) => resolve({ command, error: err }));
