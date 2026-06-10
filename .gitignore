@@ -1,0 +1,15 @@
+log/
+__pycache__/
+*.pyc
+.venv/
+.venv312/
+.env
+.env.*
+!.env.example
+.idea/
+.playwright_profiles/
+playwright_profiles/
+*/.playwright_profile_netease
+debug/
+test/
+.claude/
