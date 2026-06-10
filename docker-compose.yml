@@ -1,20 +1,21 @@
 services:
   netease-musician-task:
-    # 使用预构建镜像（推荐）
-    image: xinghehy/netease-musician-task:latest
-    # 或使用本地构建：
-    # build: .
-    # image: netease-musician-task:latest
+    build: .
+    image: netease-musician-task:sqlite
     container_name: netease-musician-task
     restart: always
     volumes:
       - ./log:/app/log
+      - ./data:/app/data
       - ./playwright_profiles:/app/playwright_profiles
       - ./debug:/app/debug
     environment:
       - TZ=Asia/Shanghai
-      # Redis连接URL，格式：redis://[password@]host:port/db
-      - REDIS_URL=redis://localhost:6379/0
+      # SQLite 数据库路径，建议挂载 ./data 持久化
+      - SQLITE_DB_PATH=/app/data/netease_music.db
+      # 单账号配置；多账号可改用 NETEASE_ACCOUNTS JSON
+      - NETEASE_PHONE=your-phone
+      - NETEASE_PASSWORD=your-password
       # 每日任务执行时间（格式：HH:MM）
       - SEND_TIME=09:30
       # 间隔任务的执行间隔天数

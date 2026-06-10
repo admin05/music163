@@ -6,13 +6,13 @@
 
 ## 致谢
 
-本项目基于 [XingHehy/netease-musician-task](https://github.com/XingHehy/netease-musician-task/) 适配而来。感谢原作者 XingHehy 和原项目贡献者提供网易音乐人任务、Playwright 登录、Redis 状态管理、Docker 部署等核心能力。本仓库主要补充 Arcadia 运行入口、Bark 通知和更适合本地 NAS 部署的说明。
+本项目基于 [XingHehy/netease-musician-task](https://github.com/XingHehy/netease-musician-task/) 适配而来。感谢原作者 XingHehy 和原项目贡献者提供网易音乐人任务、Playwright 登录、状态管理、Docker 部署等核心能力。本仓库主要补充 Arcadia 运行入口、SQLite 本地存储、Bark 通知和更适合本地 NAS 部署的说明。
 
 👉 **想快速了解能做什么？请查看功能预览：[`docs/PREVIEW.md`](./docs/PREVIEW.md)**
 
 ## Arcadia 部署
 
-这个版本已经增加 Arcadia 入口，适合在 Arcadia 中按定时任务运行一次后退出，并通过 Bark 推送结果摘要。推荐流程是：安装依赖、配置 Redis、写入账号任务、在 Arcadia 中配置定时运行命令。
+这个版本已经增加 Arcadia 入口，适合在 Arcadia 中按定时任务运行一次后退出，并通过 Bark 推送结果摘要。推荐流程是：安装依赖、配置 SQLite 数据库路径和账号环境变量、在 Arcadia 中配置定时运行命令。
 
 ### 1. 安装依赖
 
@@ -27,28 +27,38 @@ python3 -m playwright install chromium
 
 如使用 `LOGIN_METHOD=api` 可以不安装 Playwright 浏览器，但当前更推荐保留默认的 `playwright`。
 
-### 2. 准备 Redis
+### 2. 准备 SQLite 与账号配置
 
-程序使用 Redis 保存账号任务、Cookie、上次执行记录和 VIP 领取时间。Arcadia 环境中必须能访问你的 Redis。
+程序使用 SQLite 保存账号任务、Cookie、上次执行记录和 VIP 领取时间。SQLite 不需要单独启动服务，默认数据库文件为 `data/netease_music.db`，首次运行会自动创建。
 
-在 Redis 中写入账号信息：
+单账号可以直接在 Arcadia 环境变量中配置：
 
 ```bash
-HSET netease:music:task task1 '{"phone": "your_phone", "password": "your_password"}'
+SQLITE_DB_PATH=data/netease_music.db
+NETEASE_PHONE=your_phone
+NETEASE_PASSWORD=your_password
+```
+
+多账号可以使用 `NETEASE_ACCOUNTS` JSON：
+
+```bash
+NETEASE_ACCOUNTS='[{"task_key":"task1","phone":"your_phone","password":"your_password"},{"task_key":"task2","phone":"another_phone","password":"another_password"}]'
 ```
 
 说明：
-- `netease:music:task` 是固定哈希表名。
-- `task1` 是任务标识，多账号时可以写 `task2`、`account_a` 等不同 key。
+- `SQLITE_DB_PATH` 可填相对路径或绝对路径，建议放在持久化目录。
+- `task_key` 是任务标识，多账号时建议用 `task1`、`account_a` 等不同 key。
 - `phone` 和 `password` 是网易云账号登录信息，不要提交到 GitHub。
-- 首次运行成功后，程序会把识别到的 `uid` 和登录 Cookie 写回 Redis。
+- 首次运行成功后，程序会把识别到的 `uid` 和登录 Cookie 写回 SQLite。
 
 ### 3. 配置 Arcadia 环境变量
 
 可以参考 `.env.example`，在 Arcadia 的环境变量中配置：
 
 ```bash
-REDIS_URL=redis://your-redis-host:6379/5
+SQLITE_DB_PATH=data/netease_music.db
+NETEASE_PHONE=your_phone
+NETEASE_PASSWORD=your_password
 LOGIN_METHOD=playwright
 PLAYWRIGHT_PROFILE_BASEDIR=.playwright_profiles
 PLAYWRIGHT_PROFILE_PER_USER=1
@@ -61,7 +71,8 @@ ARC_BARK_ON_SUCCESS=1
 
 | 参数 | 示例 | 说明 |
 | --- | --- | --- |
-| `REDIS_URL` | `redis://192.168.1.10:6379/5` | Redis 连接地址；如果有密码可写成 `redis://:password@host:6379/5` |
+| `SQLITE_DB_PATH` | `data/netease_music.db` | SQLite 数据库路径，建议持久化 |
+| `NETEASE_PHONE` / `NETEASE_PASSWORD` | `your_phone` / `your_password` | 单账号配置 |
 | `LOGIN_METHOD` | `playwright` | 建议固定为 `playwright`，网页登录更稳 |
 | `BARK` | `your-bark-key` | Bark 推送 key；也可以填完整 Bark URL |
 
@@ -71,6 +82,7 @@ ARC_BARK_ON_SUCCESS=1
 | --- | --- | --- |
 | `PLAYWRIGHT_PROFILE_BASEDIR` | `.playwright_profiles` | 保存网页登录态，建议持久化这个目录 |
 | `PLAYWRIGHT_PROFILE_PER_USER` | `1` | 多账号独立 profile，避免 Cookie 串号 |
+| `NETEASE_ACCOUNTS` | JSON 数组 | 多账号配置，配置后会自动同步到 SQLite |
 | `EXECUTION_INTERVAL_DAYS` | `3` | 动态分享任务间隔天数 |
 | `MAX_MONTHLY_SENDS` | `4` | 每月最多分享次数 |
 | `ARC_RUN_MODE` | `all` | Arcadia 单次运行模式 |
@@ -159,7 +171,7 @@ ARC_RUN_MODE=daily
 - ✅ **多用户支持**：支持同时管理多个网易云音乐账号
 - ✅ **智能登录**：优先使用缓存的 Cookie，失效后自动重新登录
 - ✅ **任务分类执行**：每日任务每天执行，分享任务按间隔天数执行
-- ✅ **执行记录管理**：Redis 存储执行记录，精确控制任务执行频率
+- ✅ **执行记录管理**：SQLite 存储执行记录，精确控制任务执行频率
 - ✅ **环境变量配置**：支持通过环境变量灵活配置执行参数
 - ✅ **日志管理**：详细的日志记录，支持日志轮转和大小限制
 - ✅ **Docker 部署**：提供 Docker 镜像和 Compose 配置，便于部署
@@ -172,7 +184,7 @@ ARC_RUN_MODE=daily
 
 - Python 3.12（推荐与 Docker 一致；最低建议 3.10+）
 - Requests、PyCryptodome
-- Redis（Cookie、任务数据、执行记录）
+- SQLite（Cookie、任务数据、执行记录，本地文件数据库）
 - APScheduler（定时调度）
 - Playwright + Chromium（网页登录与部分页面能力）
 - ddddocr（易盾滑块辅助识别）
@@ -182,7 +194,7 @@ ARC_RUN_MODE=daily
 ## 依赖要求
 
 - **Python**：建议 3.12，需安装 `requirements.txt`
-- **Redis**：必须，用于任务与登录态
+- **SQLite**：Python 标准库自带，无需单独安装服务；数据库文件默认位于 `data/netease_music.db`
 - **Node.js**：推荐安装；用于通过 `execjs` 执行 `checkToken.js` 生成 `checkToken`。若缺少可用的 JS 运行时，音乐人相关接口可能返回 `301 用户未登陆`。
 - **Playwright 浏览器**：使用 `LOGIN_METHOD=playwright` 或运行 `playwright_handle/login.py` 前需执行：`python -m playwright install chromium`
 - **Docker**（可选）：容器化部署
@@ -211,19 +223,27 @@ pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
-### 4. 配置 Redis
+### 4. 配置 SQLite 和账号
 
-见下文 [环境变量说明](#环境变量说明)。通过 `REDIS_URL` 连接你的 Redis 实例。
+见下文 [环境变量说明](#环境变量说明)。通过 `SQLITE_DB_PATH` 指定数据库文件，通过 `NETEASE_PHONE` / `NETEASE_PASSWORD` 或 `NETEASE_ACCOUNTS` 配置账号。
 
 ### 5. 添加用户任务
 
-在 Redis 的哈希表 `netease:music:task` 中为每个任务写入账号信息，例如：
+单账号可以直接写环境变量：
 
 ```bash
-HSET netease:music:task <task_key> '{"phone": "your_phone", "password": "your_password"}'
+export NETEASE_PHONE="your_phone"
+export NETEASE_PASSWORD="your_password"
+export NETEASE_TASK_KEY="task1"
 ```
 
-- `<task_key>`：任务唯一标识（自定义字符串）
+多账号使用 JSON：
+
+```bash
+export NETEASE_ACCOUNTS='[{"task_key":"task1","phone":"your_phone","password":"your_password"},{"task_key":"task2","phone":"another_phone","password":"another_password"}]'
+```
+
+- `task_key`：任务唯一标识（自定义字符串）
 - `phone`：网易云登录账号（手机号）
 - `password`：密码（Playwright 与 API 登录均可能用到）
 
@@ -235,7 +255,12 @@ HSET netease:music:task <task_key> '{"phone": "your_phone", "password": "your_pa
 
 | 环境变量 | 说明 | 默认值 |
 | --- | --- | --- |
-| `REDIS_URL` | Redis 连接地址 | `redis://localhost:6379/5` |
+| `SQLITE_DB_PATH` | SQLite 数据库文件路径 | `data/netease_music.db` |
+| `NETEASE_PHONE` | 单账号手机号 | 空 |
+| `NETEASE_PASSWORD` | 单账号密码 | 空 |
+| `NETEASE_TASK_KEY` | 单账号任务标识 | `task1` |
+| `NETEASE_UID` | 单账号已知 UID，可不填 | 空 |
+| `NETEASE_ACCOUNTS` | 多账号 JSON 数组或对象 | 空 |
 | `SEND_TIME` | 每日调度触发时间（`HH:MM`） | `09:30` |
 | `EXECUTION_INTERVAL_DAYS` | 分享类间隔任务的最小间隔天数 | `3` |
 | `MAX_MONTHLY_SENDS` | 每月分享次数上限 | `4` |
@@ -253,7 +278,9 @@ HSET netease:music:task <task_key> '{"phone": "your_phone", "password": "your_pa
 示例：
 
 ```bash
-export REDIS_URL="redis://localhost:6379/5"
+export SQLITE_DB_PATH="data/netease_music.db"
+export NETEASE_PHONE="your_phone"
+export NETEASE_PASSWORD="your_password"
 export SEND_TIME="09:30"
 export EXECUTION_INTERVAL_DAYS="7"
 export MAX_MONTHLY_SENDS="4"
@@ -267,9 +294,9 @@ export ARC_RUN_MODE="all"
 
 ## Playwright 网页登录说明
 
-在接口登录易触发风控、或音乐人接口频繁 `301` 时，建议使用 **`LOGIN_METHOD=playwright`**，由浏览器完成登录并写入 Redis Cookie（约 7 天过期，失效后会自动再走登录流程）。
+在接口登录易触发风控、或音乐人接口频繁 `301` 时，建议使用 **`LOGIN_METHOD=playwright`**，由浏览器完成登录并写入 SQLite Cookie（约 30 天过期，失效后会自动再走登录流程）。
 
-### 独立运行登录脚本（写入 Redis）
+### 独立运行登录脚本（写入 SQLite）
 
 在项目**根目录**下执行（保证能正确找到 `core` 等模块；若从其他目录运行需配置 `PYTHONPATH`）：
 
@@ -285,7 +312,7 @@ python playwright_handle/login.py
 4. 若页面提示 **「您当前的网络环境存在安全风险」**，脚本会识别并终止，需更换网络 / 代理环境后再试
 5. 登录失败、未触发验证码、滑块失败、二次验证超时等情况，会在项目根目录 **`debug/{手机号}/`** 下保存带时间戳的 PNG 截图，便于排查（各场景 `tag` 与日志关键字见 [docs/DEBUG_DOCS.md](./docs/DEBUG_DOCS.md)）。
 
-登录成功后会尝试识别 `uid` 并将 Cookie 写入 Redis（键名形如 `netease:music:user:{uid}:cookie`）。
+登录成功后会尝试识别 `uid` 并将 Cookie 写入 SQLite 的 `sessions` 表。
 
 ### 与主程序集成
 
@@ -308,7 +335,7 @@ python main.py
 1. **每日任务**（每天在 `SEND_TIME` 执行）：网易云日常签到、音乐人云豆签到等
 2. **间隔任务**（每天在 `SEND_TIME` 延后约 5 分钟检测）：音乐人分享动态等；仅当距上次成功执行已满 `EXECUTION_INTERVAL_DAYS` 天且未超过 `MAX_MONTHLY_SENDS` 等限制时才会真正分享
 
-执行记录与部分状态保存在 Redis 键 `netease:music:data` 等（详见下文）。
+执行记录与部分状态保存在 SQLite 的 `kv` 表中（详见下文）。
 
 ---
 
@@ -325,44 +352,33 @@ python main.py
 
 ## Docker 部署
 
-### 使用预构建镜像（推荐）
-
-可以直接使用已发布的 Docker 镜像，无需本地构建。镜像支持多架构（amd64/arm64），Docker 会自动选择适合你系统的版本：
-
-```bash
-docker pull xinghehy/netease-musician-task:latest
-```
-
-**支持的架构**：
-- `linux/amd64` - 适用于 x86_64 处理器（Intel/AMD）
-- `linux/arm64` - 适用于 ARM64 处理器（树莓派 4/5、Apple Silicon、ARM 服务器等）
-
 ### 构建镜像
 
-如需自行构建：
+当前仓库包含 SQLite 本地存储改造，Docker 部署建议直接使用本仓库构建镜像：
 
 ```bash
-docker build -t netease-musician-task:latest .
+docker build -t netease-musician-task:sqlite .
 ```
 
 ### Docker Compose
 
-使用预构建镜像：
+默认 `docker-compose.yml` 会本地构建并使用 `netease-musician-task:sqlite`：
 
 ```bash
 docker-compose up -d
 ```
 
-或在 `docker-compose.yml` 中指定镜像：
+对应配置示例：
 
 ```yaml
 services:
   netease-musician-task:
-    image: xinghehy/netease-musician-task:latest
+    build: .
+    image: netease-musician-task:sqlite
     # ... 其他配置
 ```
 
-默认 `docker-compose.yml` 将宿主机的 `./log`、`./playwright_profiles` 挂载到容器内。镜像工作目录为 `/app`，若使用默认 `PLAYWRIGHT_PROFILE_BASEDIR=.playwright_profiles`，数据在容器内**未**挂载到上述卷。为持久化浏览器登录态，建议在 Compose 中增加环境变量，使目录与卷一致，例如：
+默认 `docker-compose.yml` 将宿主机的 `./log`、`./data`、`./playwright_profiles`、`./debug` 挂载到容器内。镜像工作目录为 `/app`，建议保持 `SQLITE_DB_PATH=/app/data/netease_music.db` 和 `PLAYWRIGHT_PROFILE_BASEDIR=playwright_profiles`，确保数据库和网页登录态都能持久化。
 
 ```yaml
 # 推荐：API版基本上已无法使用
@@ -381,12 +397,20 @@ volumes:
 
 ### docker run 示例
 
-使用预构建镜像：
+先构建镜像：
+
+```bash
+docker build -t netease-musician-task:sqlite .
+```
+
+再运行容器：
 
 ```bash
 docker run -d --name netease-musician-task \
   -e TZ=Asia/Shanghai \
-  -e REDIS_URL="redis://host.docker.internal:6379/0" \
+  -e SQLITE_DB_PATH="/app/data/netease_music.db" \
+  -e NETEASE_PHONE="your-phone" \
+  -e NETEASE_PASSWORD="your-password" \
   -e SEND_TIME="09:30" \
   -e EXECUTION_INTERVAL_DAYS="7" \
   -e MAX_MONTHLY_SENDS="5" \
@@ -394,10 +418,11 @@ docker run -d --name netease-musician-task \
   -e PLAYWRIGHT_PROFILE_BASEDIR="playwright_profiles" \
   -e WECOM_WEBHOOK_KEY="your-wecom-webhook-key" \
   -v "$(pwd)/log:/app/log" \
+  -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/playwright_profiles:/app/playwright_profiles" \
   -v "$(pwd)/debug:/app/debug" \
   --restart always \
-  xinghehy/netease-musician-task:latest
+  netease-musician-task:sqlite
 ```
 
 ---
@@ -408,19 +433,19 @@ docker run -d --name netease-musician-task \
 | --- | --- |
 | `log/netease_music_cron.log` | 定时调度相关日志 |
 | `log/netease_music.log` | 核心业务日志 |
+| `data/netease_music.db` | SQLite 数据库，保存账号、Cookie、执行记录和 VIP 状态 |
 | `debug/{手机号}/` | Playwright 登录失败等场景的页面截图（**项目根目录**，非 `playwright_handle` 下） |
 | `.playwright_profiles/` | 默认 Playwright 用户数据目录（可通过 `PLAYWRIGHT_PROFILE_BASEDIR` 修改；建议加入 `.gitignore`） |
 
 ---
 
-## Redis 键说明（摘要）
+## SQLite 表说明（摘要）
 
-| 键 | 用途 |
+| 表 | 用途 |
 | --- | --- |
-| `netease:music:task` | 哈希表，`task_key` → 用户 JSON（含 `phone`、`password` 等） |
-| `netease:music:data` | 任务执行间隔、上次执行时间等 |
-| `netease:music:user:{uid}:cookie` | 用户登录 Cookie（带过期时间） |
-| `netease:music:user:{uid}:userdata` | 用户资料缓存 |
+| `accounts` | 账号任务配置，包含 `task_key`、`phone`、`password`、`uid` |
+| `sessions` | 用户登录 Cookie、用户资料缓存和过期时间 |
+| `kv` | 任务执行间隔、上次执行时间、VIP 下次领取时间等状态 |
 
 ---
 
@@ -433,7 +458,8 @@ netease-musician-task/
 ├── arcadia.js              # Arcadia Node 包装入口
 ├── arcadia_notify.py       # Bark 通知封装
 ├── core.py                 # 登录、任务、API 封装
-├── config.py               # 环境变量与 Redis 初始化
+├── config.py               # 环境变量与 SQLite 配置
+├── sqlite_storage.py       # SQLite 存储封装
 ├── checkToken.js           # checkToken 生成（需 Node/execjs）
 ├── requirements.txt
 ├── Dockerfile
@@ -453,9 +479,9 @@ netease-musician-task/
 
 ## 注意事项
 
-1. **Cookie 有效期**：网页登录写入的 Cookie 在 Redis 中约 7 天过期，失效后程序会尝试重新登录。
+1. **Cookie 有效期**：网页登录写入的 Cookie 在 SQLite 中约 30 天过期，失效后程序会尝试重新登录。
 2. **网络环境**：需能访问网易云音乐相关域名；异常风控时优先检查 IP / 代理。
-3. **账号安全**：密码存放在 Redis 任务数据中，请做好 Redis 访问控制与备份策略。
+3. **账号安全**：密码和 Cookie 会存放在 SQLite 数据库中，请做好 `data/` 目录权限与备份策略，不要提交数据库文件。
 4. **工作目录**：建议在项目根目录运行 `python main.py`，以便日志、`debug`、`profile` 路径与预期一致。
 5. **执行频率**：分享任务受 `EXECUTION_INTERVAL_DAYS` 与 `MAX_MONTHLY_SENDS` 共同约束，请合理设置避免风控。
 

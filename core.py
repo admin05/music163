@@ -8,7 +8,6 @@ import random
 import time
 import urllib.parse
 
-import redis
 import requests
 from Crypto.Cipher import AES
 
@@ -44,8 +43,9 @@ if not logger.handlers:
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)
 
-# 从配置文件导入Redis配置
-from config import REDIS_POOL, REDIS_CONF, LOGIN_METHOD, PLAYWRIGHT_PROFILE_BASEDIR, PLAYWRIGHT_PROFILE_PER_USER
+# 从配置文件导入运行配置
+from config import LOGIN_METHOD, PLAYWRIGHT_PROFILE_BASEDIR, PLAYWRIGHT_PROFILE_PER_USER, SQLITE_DB_PATH
+from sqlite_storage import SQLiteStorage
 
 
 # --- 1. 基础加解密工具类 ---
@@ -194,7 +194,7 @@ class NeteaseClient:
             logger.error(f"Cookie 解析失败: {e}")
 
     def get_cookie_str(self):
-        """将当前 Session 的 Cookie 导出为字符串，方便存 Redis"""
+        """将当前 Session 的 Cookie 导出为字符串，方便持久化"""
         try:
             cookie_dict = requests.utils.dict_from_cookiejar(self.session.cookies)
             return '; '.join([f"{k}={v}" for k, v in cookie_dict.items()])
@@ -253,14 +253,14 @@ class NeteaseClient:
 class AuthManager:
     def __init__(self):
         try:
-            self.redis = redis.Redis(connection_pool=REDIS_POOL) if REDIS_POOL else None
-            if self.redis:
-                self.redis.ping()
-            else:
-                logger.error("Redis连接池未初始化")
+            self.storage = SQLiteStorage(SQLITE_DB_PATH)
+            self.storage.ping()
+            imported = self.storage.bootstrap_accounts_from_env()
+            if imported:
+                logger.info(f"已从环境变量同步 {imported} 个账号到 SQLite")
         except Exception as e:
-            logger.error(f"初始化Redis连接失败: {e}")
-            self.redis = None
+            logger.error(f"初始化 SQLite 存储失败: {e}")
+            self.storage = None
 
     def _get_uid_by_cookie(self, cookie_str: str):
         """
@@ -309,15 +309,10 @@ class AuthManager:
                 logger.warning(f"用户 {real_uid} 登录成功但保存会话失败")
 
             # 回写真实 UID 逻辑
-            if task_key and self.redis:
+            if task_key and self.storage:
                 try:
-                    user_info_str = self.redis.hget('netease:music:task', task_key)
-                    if user_info_str:
-                        user_info = json.loads(user_info_str)
-                        if str(user_info.get('uid')) != str(real_uid):
-                            user_info['uid'] = real_uid
-                            self.redis.hset('netease:music:task', task_key, json.dumps(user_info))
-                            logger.info(f"绑定真实 UID: {real_uid}")
+                    self.storage.update_account_uid(task_key, real_uid)
+                    logger.info(f"绑定真实 UID: {real_uid}")
                 except Exception as e:
                     logger.error(f"回写 UID 失败: {e}")
 
@@ -329,7 +324,7 @@ class AuthManager:
 
     def _login_via_playwright(self, phone, password, task_key=None):
         """
-        使用 Playwright 浏览器完成登录，并把 Cookie 写入 Redis，返回 NeteaseClient。
+        使用 Playwright 浏览器完成登录，并把 Cookie 写入 SQLite，返回 NeteaseClient。
         """
         try:
             from playwright_handle.login import browser_login  # 延迟导入，避免循环
@@ -361,20 +356,15 @@ class AuthManager:
 
         client = NeteaseClient(cookie_str=cookie_str, uid=uid)
 
-        # 保存到 Redis
+        # 保存到 SQLite
         if not self._save_session(uid, cookie_str, {"uid": uid}):
             logger.warning(f"用户 {uid} 登录成功但保存会话失败")
 
         # 回写真实 UID
-        if task_key and self.redis:
+        if task_key and self.storage:
             try:
-                user_info_str = self.redis.hget('netease:music:task', task_key)
-                if user_info_str:
-                    user_info = json.loads(user_info_str)
-                    if str(user_info.get('uid')) != str(uid):
-                        user_info['uid'] = uid
-                        self.redis.hset('netease:music:task', task_key, json.dumps(user_info))
-                        logger.info(f"绑定真实 UID: {uid}")
+                self.storage.update_account_uid(task_key, uid)
+                logger.info(f"绑定真实 UID: {uid}")
             except Exception as e:
                 logger.error(f"回写 UID 失败: {e}")
 
@@ -388,12 +378,12 @@ class AuthManager:
         return self._login_via_api(phone, password, task_key)
 
     def get_client_by_uid(self, uid):
-        if not uid or not self.redis:
+        if not uid or not self.storage:
             return None
 
         try:
             # 读取字符串 Cookie
-            cookie_str = self.redis.get(f'netease:music:user:{uid}:cookie')
+            cookie_str = self.storage.get_session_cookie(uid)
             if cookie_str:
                 client = NeteaseClient(cookie_str=cookie_str, uid=uid)
 
@@ -410,8 +400,7 @@ class AuthManager:
                     logger.warning(f"用户 {uid} Cookie 可能已失效，状态码: {check.get('code')}")
                     # 删除失效的Cookie
                     try:
-                        self.redis.delete(f'netease:music:user:{uid}:cookie')
-                        self.redis.delete(f'netease:music:user:{uid}:userdata')
+                        self.storage.delete_session(uid)
                         logger.info(f"已删除用户 {uid} 的失效Cookie")
                     except Exception as e:
                         logger.error(f"删除失效Cookie失败: {e}")
@@ -425,17 +414,16 @@ class AuthManager:
         return None
 
     def get_all_users_credentials(self):
-        if not self.redis:
-            logger.error("Redis连接不可用，无法获取用户凭证")
+        if not self.storage:
+            logger.error("SQLite 存储不可用，无法获取用户凭证")
             return []
 
         try:
-            users = self.redis.hgetall('netease:music:task')
             user_list = []
-            for task_key, info_str in users.items():
+            for info in self.storage.list_accounts():
                 try:
-                    info = json.loads(info_str)
                     if all(key in info for key in ['phone', 'password']):
+                        task_key = info.get('task_key')
                         user_list.append({
                             'task_key': task_key,
                             'uid': info.get('uid', task_key),  # 优先取 uid
@@ -443,9 +431,7 @@ class AuthManager:
                             'password': info.get('password')
                         })
                     else:
-                        logger.warning(f"用户数据不完整，缺少必要字段: {task_key}")
-                except json.JSONDecodeError:
-                    logger.error(f"解析用户数据失败: {task_key}")
+                        logger.warning(f"用户数据不完整，缺少必要字段: {info.get('task_key')}")
                 except Exception as e:
                     logger.error(f"处理用户数据时发生异常: {e}")
             return user_list
@@ -454,25 +440,23 @@ class AuthManager:
             return []
 
     def _save_session(self, uid, cookie_str, user_data):
-        if not self.redis or not cookie_str:
+        if not self.storage or not cookie_str:
             return False
 
         try:
-            # Key 改回简单的 :cookie，存纯字符串
-            self.redis.set(f'netease:music:user:{uid}:cookie', cookie_str, ex=86400 * 30)  # 30天过期
-            self.redis.set(f'netease:music:user:{uid}:userdata', json.dumps(user_data), ex=86400 * 30)
+            self.storage.save_session(uid, cookie_str, user_data, ttl_days=30)
             return True
         except Exception as e:
             logger.error(f"保存用户 {uid} 会话失败: {e}")
             return False
 
     def update_cookie(self, uid, cookie_str):
-        """更新用户Cookie到Redis（用于任务执行后刷新Cookie）"""
-        if not self.redis or not cookie_str:
+        """更新用户Cookie到 SQLite（用于任务执行后刷新Cookie）"""
+        if not self.storage or not cookie_str:
             return False
         try:
-            self.redis.set(f'netease:music:user:{uid}:cookie', cookie_str, ex=86400 * 30)
-            logger.info(f"已更新用户 {uid} 的Cookie到Redis")
+            self.storage.update_cookie(uid, cookie_str, ttl_days=30)
+            logger.info(f"已更新用户 {uid} 的Cookie到 SQLite")
             return True
         except Exception as e:
             logger.error(f"更新用户 {uid} Cookie失败: {e}")
@@ -621,7 +605,7 @@ if __name__ == '__main__':
     for user in user_list:
         try:
             client = None
-            # 1. 尝试使用redis存的 Cookie
+            # 1. 尝试使用 SQLite 中保存的 Cookie
             if user['uid'] and str(user['uid']) != str(user['phone']):
                 client = auth.get_client_by_uid(user['uid'])
             else:

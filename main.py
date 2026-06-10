@@ -1,7 +1,6 @@
 import logging
 import json
 import time
-import redis
 from datetime import datetime, date, timedelta
 from logging.handlers import RotatingFileHandler
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -12,12 +11,13 @@ from core import AuthManager, TaskManager, logger
 
 # 从配置文件导入所有配置
 from config import (
-    REDIS_KEY, REDIS_CONF, REDIS_POOL,
+    SQLITE_DB_PATH, SQLITE_STATE_KEY,
     MAX_MONTHLY_SENDS, SEND_TIME, EXECUTION_INTERVAL_DAYS,
     LOGIN_METHOD,
     PLAYWRIGHT_PROFILE_BASEDIR, PLAYWRIGHT_PROFILE_PER_USER,
     WECOM_WEBHOOK_KEY,
 )
+from sqlite_storage import SQLiteStorage
 
 import os, sys, random
 
@@ -48,23 +48,16 @@ if not has_cron_handler:
     cron_file_handler.setFormatter(formatter)
     logger.addHandler(cron_file_handler)
 
-# 使用配置中的Redis连接池创建Redis客户端
-# 注意：Redis连接日志已在config.py中记录，这里不再重复记录
+# 使用 SQLite 保存账号状态、Cookie、发送记录和 VIP 时间
 try:
-    if REDIS_POOL:
-        redis_client = redis.Redis(connection_pool=REDIS_POOL)
-        redis_client.ping()
-    else:
-        # 如果连接池未初始化，使用配置创建连接
-        redis_client = redis.Redis(**REDIS_CONF) if REDIS_CONF else None
-        if redis_client:
-            redis_client.ping()
-        else:
-            logger.error("Redis配置未初始化")
-            redis_client = None
+    storage = SQLiteStorage(SQLITE_DB_PATH)
+    storage.ping()
+    imported_accounts = storage.bootstrap_accounts_from_env()
+    if imported_accounts:
+        logger.info(f"已从环境变量同步 {imported_accounts} 个账号到 SQLite")
 except Exception as e:
-    logger.error(f"Redis连接失败: {e}")
-    redis_client = None
+    logger.error(f"SQLite 存储初始化失败: {e}")
+    storage = None
 
 VIP_FURTHER_GET_TIME_KEY_TPL = "netease:music:user:{uid}:vip:furtherVipGetTime"
 
@@ -74,15 +67,13 @@ def _vip_key(user_uid) -> str:
 
 
 def get_vip_further_get_time_ms(user_uid) -> int | None:
-    """从 Redis 获取用户下次可领取 VIP 的时间（ms）。"""
-    if not redis_client:
+    """从 SQLite 获取用户下次可领取 VIP 的时间（ms）。"""
+    if not storage:
         return None
     try:
-        v = redis_client.get(_vip_key(user_uid))
+        v = storage.get_value(_vip_key(user_uid))
         if v is None:
             return None
-        if isinstance(v, (bytes, bytearray)):
-            v = v.decode("utf-8", errors="ignore")
         v = str(v).strip()
         if not v:
             return None
@@ -103,11 +94,11 @@ def get_vip_further_get_time_ms(user_uid) -> int | None:
 
 
 def set_vip_further_get_time_ms(user_uid, ms: int) -> None:
-    """把用户下次可领取 VIP 的时间（ms）存到 Redis。"""
-    if not redis_client:
+    """把用户下次可领取 VIP 的时间（ms）存到 SQLite。"""
+    if not storage:
         return
     try:
-        redis_client.set(_vip_key(user_uid), str(int(ms)))
+        storage.set_value(_vip_key(user_uid), str(int(ms)))
     except Exception as e:
         logger.error(f"保存用户 {user_uid} 的 VIP furtherVipGetTime 失败: {e}")
 
@@ -119,34 +110,32 @@ def _fmt_ms(ms: int) -> str:
         return str(ms)
 
 
-# Redis存储管理函数
+# SQLite 存储管理函数
 def load_send_records():
-    """从Redis加载发送记录"""
-    if not redis_client:
-        logger.error("Redis客户端未初始化，无法加载发送记录")
+    """从 SQLite 加载发送记录"""
+    if not storage:
+        logger.error("SQLite 存储未初始化，无法加载发送记录")
         return {}
 
     try:
-        data = redis_client.get(REDIS_KEY)
-        if data:
-            return json.loads(data)
+        return storage.get_json(SQLITE_STATE_KEY, {}) or {}
     except json.JSONDecodeError:
-        logger.error("Redis中的数据不是有效的JSON格式")
+        logger.error("SQLite 中的发送记录不是有效的 JSON 格式")
     except Exception as e:
-        logger.error(f"从Redis加载数据时发生错误: {e}")
+        logger.error(f"从 SQLite 加载数据时发生错误: {e}")
     return {}
 
 def save_send_records(data):
-    """保存发送记录到Redis"""
-    if not redis_client:
-        logger.error("Redis客户端未初始化，无法保存发送记录")
+    """保存发送记录到 SQLite"""
+    if not storage:
+        logger.error("SQLite 存储未初始化，无法保存发送记录")
         return False
 
     try:
-        redis_client.set(REDIS_KEY, json.dumps(data, ensure_ascii=False))
+        storage.set_json(SQLITE_STATE_KEY, data)
         return True
     except Exception as e:
-        logger.error(f"保存数据到Redis时发生错误: {e}")
+        logger.error(f"保存数据到 SQLite 时发生错误: {e}")
         return False
 
 def should_execute_task(user_uid):
@@ -208,7 +197,7 @@ def update_last_send_record(user_uid):
     send_records[str(user_uid)] = user_record
 
     if save_send_records(send_records):
-        logger.info(f"已更新用户 {user_uid} 的最后发送记录到Redis: {today_str}")
+        logger.info(f"已更新用户 {user_uid} 的最后发送记录到 SQLite: {today_str}")
         logger.info(f"用户 {user_uid} {current_year_month} 月发送次数已更新为 {monthly_sends[current_year_month]}/{MAX_MONTHLY_SENDS}")
     else:
         logger.error(f"更新用户 {user_uid} 的最后发送记录失败")
@@ -258,13 +247,13 @@ def daily_task_runner():
     # 汇总给企业微信的精简结果（按用户聚合），避免推送完整日志
     daily_wecom_lines: list[str] = []
 
-    # 为 Redis / 用户列表获取增加重试，避免短暂网络问题导致本次任务完全跳过
+    # 为 SQLite / 用户列表获取增加重试，避免短暂存储问题导致本次任务完全跳过
     def _load_users_for_daily():
         try:
             auth_local = AuthManager()
-            # 如果 Redis 未就绪，视为失败以触发重试
-            if not getattr(auth_local, "redis", None):
-                logger.error("Redis 未就绪，获取每日任务用户列表失败，准备重试")
+            # 如果 SQLite 未就绪，视为失败以触发重试
+            if not getattr(auth_local, "storage", None):
+                logger.error("SQLite 未就绪，获取每日任务用户列表失败，准备重试")
                 return None
             user_list_local = auth_local.get_all_users_credentials()
             # 正常情况下，0 个用户也算成功（可能本来就没配置用户）
@@ -294,14 +283,14 @@ def daily_task_runner():
             task_name="加载每日任务用户列表",
         )
         if not load_res:
-            logger.error("多次重试后仍无法从 Redis 获取每日任务用户列表，本次每日任务终止")
-            # Redis 多次重试仍失败时，发送简要企业微信通知
+            logger.error("多次重试后仍无法从 SQLite 获取每日任务用户列表，本次每日任务终止")
+            # SQLite 多次重试仍失败时，发送简要企业微信通知
             try:
                 if WECOM_WEBHOOK_KEY:
                     from wecom_notify import send_wecom_webhook
                     send_wecom_webhook(
                         WECOM_WEBHOOK_KEY,
-                        "Redis连接失败，跳过执行",
+                        "SQLite 存储初始化失败，跳过执行",
                         title="网易音乐人日常任务",
                     )
             except Exception:
@@ -321,7 +310,7 @@ def daily_task_runner():
             daily_task_res = None
             try:
                 client = None
-                # 1. 尝试使用redis存的 Cookie
+                # 1. 尝试使用 SQLite 中保存的 Cookie
                 if user['uid'] and str(user['uid']) != str(user['phone']):
                     client = auth.get_client_by_uid(user['uid'])
 
@@ -412,13 +401,13 @@ def daily_task_runner():
                     daily_task_res = task.daily_task()
                     logger.info(f"日常签到任务结果：{json.dumps(daily_task_res, ensure_ascii=False)[:100]}")
 
-                    # 任务执行完成后，更新Cookie到Redis
+                    # 任务执行完成后，更新 Cookie 到 SQLite
                     if client:
                         try:
                             fresh_cookie = client.get_cookie_str()
                             if fresh_cookie:
                                 auth.update_cookie(user['uid'], fresh_cookie)
-                                logger.info(f"用户 {user['uid']} 每日任务完成，已更新Cookie到Redis")
+                                logger.info(f"用户 {user['uid']} 每日任务完成，已更新 Cookie 到 SQLite")
                         except Exception as e:
                             logger.warning(f"更新用户 {user['uid']} Cookie失败: {e}")
 
@@ -476,13 +465,13 @@ def interval_task_runner():
     # 汇总给企业微信的精简结果（按用户聚合），避免推送完整日志
     interval_wecom_lines: list[str] = []
 
-    # 为 Redis / 用户列表获取增加重试，避免短暂网络问题导致本次任务完全跳过
+    # 为 SQLite / 用户列表获取增加重试，避免短暂存储问题导致本次任务完全跳过
     def _load_users_for_interval():
         try:
             auth_local = AuthManager()
-            # 如果 Redis 未就绪，视为失败以触发重试
-            if not getattr(auth_local, "redis", None):
-                logger.error("Redis 未就绪，获取间隔任务用户列表失败，准备重试")
+            # 如果 SQLite 未就绪，视为失败以触发重试
+            if not getattr(auth_local, "storage", None):
+                logger.error("SQLite 未就绪，获取间隔任务用户列表失败，准备重试")
                 return None
             user_list_local = auth_local.get_all_users_credentials()
             # 正常情况下，0 个用户也算成功（可能本来就没配置用户）
@@ -502,14 +491,14 @@ def interval_task_runner():
             task_name="加载间隔任务用户列表",
         )
         if not load_res:
-            logger.error("多次重试后仍无法从 Redis 获取间隔任务用户列表，本次间隔任务终止")
-            # Redis 多次重试仍失败时，发送简要企业微信通知
+            logger.error("多次重试后仍无法从 SQLite 获取间隔任务用户列表，本次间隔任务终止")
+            # SQLite 多次重试仍失败时，发送简要企业微信通知
             try:
                 if WECOM_WEBHOOK_KEY:
                     from wecom_notify import send_wecom_webhook
                     send_wecom_webhook(
                         WECOM_WEBHOOK_KEY,
-                        "Redis连接失败，跳过执行",
+                        "SQLite 存储初始化失败，跳过执行",
                         title="网易音乐人发送任务",
                     )
             except Exception:
@@ -530,11 +519,11 @@ def interval_task_runner():
                 # 检查是否应该执行任务（距离上次执行>=设置的间隔天数）
                 # user_uid 已在循环开头计算
                 # 1) VIP 领取逻辑：
-                #    - 如果 Redis 中有 furtherVipGetTime：
+                #    - 如果 SQLite 中有 furtherVipGetTime：
                 #        * 今天 == 领取日：仅打开权益页自动领取并刷新时间，当天不发动态，也不做“距离上次执行不足X天”的检测
                 #        * 今天 > 领取日：说明之前异常未执行，本次先尝试补领，然后仍按正常逻辑检测/发动态
                 #        * 今天 < 领取日：未到日期，不额外处理
-                #    - 如果 Redis 中没有记录：不做额外处理，由正常发动态流程中的监听来写入首个时间
+                #    - 如果 SQLite 中没有记录：不做额外处理，由正常发动态流程中的监听来写入首个时间
                 if LOGIN_METHOD == "playwright":
                     try:
                         vip_ms = get_vip_further_get_time_ms(user_uid)
@@ -587,7 +576,7 @@ def interval_task_runner():
                                 # 当天以“领取 VIP”为主，不再进行发布动态的间隔检测/执行
                                 continue
 
-                            # 情况二：已经错过领取日（例如 Redis 写的是 3.8，今天是 3.12），本次先补领，再继续正常发动态逻辑
+                            # 情况二：已经错过领取日（例如 SQLite 写的是 3.8，今天是 3.12），本次先补领，再继续正常发动态逻辑
                             if today > vip_date:
                                 logger.info(
                                     f"用户 {user_uid} 已错过 VIP 领取日期 {vip_date}，"
@@ -690,7 +679,7 @@ def interval_task_runner():
                     continue
 
                 client = None
-                # 1. 尝试使用redis存的 Cookie
+                # 1. 尝试使用 SQLite 中保存的 Cookie
                 if user['uid'] and str(user['uid']) != str(user['phone']):
                     client = auth.get_client_by_uid(user['uid'])
 
@@ -754,19 +743,19 @@ def interval_task_runner():
                         task_name=f"用户 {user['uid']} 的发布动态任务"
                     )
 
-                    # 任务执行完成后，更新Cookie到Redis
+                    # 任务执行完成后，更新 Cookie 到 SQLite
                     # playwright模式：使用浏览器返回的最新Cookie
                     # api模式：使用client当前的Cookie
                     if client:
                         try:
                             if LOGIN_METHOD == 'playwright' and fresh_cookie_from_browser:
                                 auth.update_cookie(user['uid'], fresh_cookie_from_browser)
-                                logger.info(f"用户 {user['uid']} 发布动态任务完成，已从浏览器更新Cookie到Redis")
+                                logger.info(f"用户 {user['uid']} 发布动态任务完成，已从浏览器更新 Cookie 到 SQLite")
                             else:
                                 fresh_cookie = client.get_cookie_str()
                                 if fresh_cookie:
                                     auth.update_cookie(user['uid'], fresh_cookie)
-                                    logger.info(f"用户 {user['uid']} 发布动态任务完成，已更新Cookie到Redis")
+                                    logger.info(f"用户 {user['uid']} 发布动态任务完成，已更新 Cookie 到 SQLite")
                         except Exception as e:
                             logger.warning(f"更新用户 {user['uid']} Cookie失败: {e}")
 

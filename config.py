@@ -3,73 +3,26 @@
 支持从环境变量读取配置，提供默认值
 """
 import os
-import urllib.parse
-import redis
 import logging
+from pathlib import Path
 
 # 使用标准 logging，避免循环导入
 _logger = logging.getLogger('netease_music')
 
+# ========== SQLite 配置 ==========
+PROJECT_ROOT = Path(__file__).resolve().parent
+SQLITE_DB_PATH = os.getenv('SQLITE_DB_PATH', 'data/netease_music.db')
+SQLITE_STATE_KEY = 'netease:music:data'
 
-def _safe_redis_url(redis_url: str) -> str:
-    try:
-        parsed = urllib.parse.urlparse(redis_url)
-        if parsed.password:
-            netloc = parsed.netloc.replace(f":{parsed.password}@", ":***@")
-            return urllib.parse.urlunparse(parsed._replace(netloc=netloc))
-    except Exception:
-        pass
-    return redis_url
 
-# ========== Redis 配置 ==========
-REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/5')
-REDIS_KEY = 'netease:music:data'
+def resolve_sqlite_db_path() -> Path:
+    db_path = Path(SQLITE_DB_PATH)
+    if not db_path.is_absolute():
+        db_path = PROJECT_ROOT / db_path
+    return db_path
 
-# Redis连接池配置
-REDIS_POOL = None
-REDIS_CONF = None
 
-# 解析redis_url创建REDIS_CONF和REDIS_POOL
-def init_redis():
-    """初始化Redis连接池"""
-    global REDIS_POOL, REDIS_CONF
-
-    try:
-        # 解析Redis URL获取配置参数
-        parsed_url = urllib.parse.urlparse(REDIS_URL)
-
-        REDIS_CONF = {
-            'host': parsed_url.hostname or 'localhost',
-            'port': parsed_url.port or 6379,
-            'db': int(parsed_url.path.lstrip('/')) if parsed_url.path and parsed_url.path != '/' else 0,
-            'password': parsed_url.password,
-            'decode_responses': True
-        }
-
-        # 创建连接池
-        REDIS_POOL = redis.ConnectionPool(**REDIS_CONF)
-
-        # 测试连接
-        redis_conn = redis.Redis(connection_pool=REDIS_POOL)
-        redis_conn.ping()
-        _logger.info(f"成功连接到Redis: {_safe_redis_url(REDIS_URL)}")
-        return True
-    except Exception as e:
-        _logger.error(f"Redis连接失败: {e}")
-        # 使用默认本地配置
-        REDIS_CONF = {
-            'host': 'localhost',
-            'port': 6379,
-            'db': 0,
-            'password': None,
-            'decode_responses': True
-        }
-        # 即使失败也创建连接池，以便后续重试
-        REDIS_POOL = redis.ConnectionPool(**REDIS_CONF)
-        return False
-
-# 初始化Redis连接池
-init_redis()
+_logger.info(f"SQLite 数据库路径: {resolve_sqlite_db_path()}")
 
 # ========== 登录方式配置 ==========
 # LOGIN_METHOD 可选：

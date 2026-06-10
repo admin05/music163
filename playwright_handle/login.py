@@ -1,6 +1,6 @@
 """
 使用 Playwright 打开网易云音乐 **手机号密码登录页**，自动完成你描述的所有点击和输入，
-并把登录后的 Cookie 保存到 Redis（供 core.py/main.py 复用）。
+并把登录后的 Cookie 保存到 SQLite（供 core.py/main.py 复用）。
 
 使用前先在文件最上面改成你自己的手机号、密码、可选 uid。
 """
@@ -642,7 +642,7 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
     """
     供核心逻辑调用的通用浏览器登录函数：
     - 使用 Playwright 完成手机号+密码登录（含滑块）
-    - 返回 cookie_str，后续由 core.AuthManager 负责写入 Redis 等
+    - 返回 cookie_str，后续由 core.AuthManager 负责写入 SQLite 等
     """
     if not phone or not password:
         raise ValueError("phone/password 不能为空")
@@ -795,7 +795,7 @@ def main():
     作为独立脚本运行时：
     - 使用上面的 PHONE / PASSWORD 登录
     - 自动识别 uid
-    - 调用 core.AuthManager 写入 Redis
+    - 调用 core.AuthManager 写入 SQLite
     """
     from core import AuthManager, NeteaseClient  # 延迟导入避免循环
 
@@ -803,7 +803,7 @@ def main():
 
     uid = FIXED_UID or try_get_uid_from_cookie(cookie_str)
     if not uid:
-        logger.warning("未能自动识别 uid，如需写入 Redis，请在文件顶部设置 FIXED_UID = 你的 uid。")
+        logger.warning("未能自动识别 uid，如需写入 SQLite，请在文件顶部设置 FIXED_UID = 你的 uid。")
     else:
         logger.info(f"识别到 uid={uid}")
 
@@ -818,8 +818,8 @@ def main():
 
         ok = auth._save_session(uid, cookie_str, user_data)
         if not ok:
-            raise SystemExit("写入 Redis 失败：请检查 REDIS_URL 配置与 Redis 连接。")
-        logger.info(f"已写入 Redis：netease:music:user:{uid}:cookie")
+            raise SystemExit("写入 SQLite 失败：请检查 SQLITE_DB_PATH 配置与数据库目录权限。")
+        logger.info(f"已写入 SQLite session：uid={uid}")
 
     logger.info("完成。你现在可以运行 main.py/core.py 的任务逻辑，会优先使用这份 cookie。")
 

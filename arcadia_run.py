@@ -27,7 +27,9 @@ class ArcadiaLogCollector(logging.Handler):
 
 def _env_summary() -> list[str]:
     return [
-        f"REDIS_URL={'已配置' if os.getenv('REDIS_URL') else '未配置，使用项目默认值'}",
+        f"SQLITE_DB_PATH={os.getenv('SQLITE_DB_PATH', 'data/netease_music.db')}",
+        f"NETEASE_ACCOUNTS={'已配置' if os.getenv('NETEASE_ACCOUNTS') else '未配置'}",
+        f"NETEASE_PHONE={'已配置' if os.getenv('NETEASE_PHONE') else '未配置'}",
         f"LOGIN_METHOD={os.getenv('LOGIN_METHOD', 'playwright')}",
         f"BARK={'已配置' if os.getenv('BARK') else '未配置'}",
         f"ARC_RUN_MODE={os.getenv('ARC_RUN_MODE', 'all')}",
@@ -42,7 +44,8 @@ def _build_summary(status: str, elapsed: float, logs: list[str], error: Exceptio
         "异常",
         "跳过",
         "结果",
-        "Redis",
+        "SQLite",
+        "数据库",
         "登录",
         "签到",
         "分享",
