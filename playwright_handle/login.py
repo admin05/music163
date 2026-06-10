@@ -249,6 +249,20 @@ def _has_yidun_slider_modal(page: Page | Frame) -> bool:
     return False
 
 
+def _refresh_yidun_captcha(scope) -> bool:
+    try:
+        refresh = scope.locator(".yidun_refresh").first
+        if refresh.count() <= 0:
+            logger.warning("[滑块] 未找到刷新按钮")
+            return False
+        refresh.click(timeout=2000, force=True)
+        time.sleep(2)
+        return True
+    except Exception as e:
+        logger.warning(f"[滑块] 刷新验证码失败，跳过后续刷新等待：{e}")
+        return False
+
+
 def _fill_first(page: Page | Frame, selector: str, value: str, *, timeout: int = 15000):
     deadline = time.time() + max(1, timeout / 1000)
     last_err: Optional[Exception] = None
@@ -332,8 +346,7 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
         except Exception as e:
             # 4. 尺寸异常：自动点击刷新按钮，并重抛异常触发重试
             logger.warning(f"图片尺寸校验失败，自动刷新验证码：{e}")
-            scope.locator(".yidun_refresh").first.click()
-            time.sleep(1)
+            _refresh_yidun_captcha(scope)
             raise RuntimeError(f"图片无效，已刷新：{e}")
         return resp.content
 
@@ -465,8 +478,7 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
                 # 验证失败，刷新验证码后重试：必须 break 出内层 scope 循环，下一轮 attempt 再重新扫 scope 等新图
                 if attempt < max_retry:
                     logger.info(f"[滑块] 第 {attempt} 次失败，刷新验证码重试")
-                    scope.locator(".yidun_refresh").first.click()
-                    time.sleep(2)  # 等新验证码 DOM 与图片加载
+                    _refresh_yidun_captcha(scope)
                     break  # 跳出 for scope，进入下一 attempt，重新从第一个 scope 开始等新图
             except cv2.error as e:
                 # 捕获 OpenCV 相关错误，单独兜底
