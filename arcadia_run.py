@@ -5,10 +5,13 @@ import sys
 import time
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+LOCAL_PACKAGES = PROJECT_ROOT / ".python-packages"
+if LOCAL_PACKAGES.is_dir() and str(LOCAL_PACKAGES) not in sys.path:
+    sys.path.insert(0, str(LOCAL_PACKAGES))
+
 from arcadia_notify import send_bark
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent
 VALID_RUN_MODES = {"all", "daily", "interval"}
 
 
