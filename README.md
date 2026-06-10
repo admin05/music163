@@ -1,12 +1,18 @@
 # 网易音乐人分享任务工具
 
-网易音乐人分享任务自动分享工具，支持多用户、定时执行、自动登录、日志管理和通知提醒等功能。
+网易音乐人分享任务自动分享工具，支持多用户、自动登录、每日签到、音乐人任务、动态分享、日志记录和 Bark 通知。
+
+本仓库是面向 **Arcadia / NAS 定时任务** 的适配版本：程序每次运行会执行一次任务，然后退出，适合交给 Arcadia 按天定时触发。
+
+## 致谢
+
+本项目基于 [XingHehy/netease-musician-task](https://github.com/XingHehy/netease-musician-task/) 适配而来。感谢原作者 XingHehy 和原项目贡献者提供网易音乐人任务、Playwright 登录、Redis 状态管理、Docker 部署等核心能力。本仓库主要补充 Arcadia 运行入口、Bark 通知和更适合本地 NAS 部署的说明。
 
 👉 **想快速了解能做什么？请查看功能预览：[`docs/PREVIEW.md`](./docs/PREVIEW.md)**
 
 ## Arcadia 部署
 
-这个版本已经增加 Arcadia 入口，适合在 Arcadia 中按定时任务运行一次后退出，并通过 Bark 推送结果摘要。
+这个版本已经增加 Arcadia 入口，适合在 Arcadia 中按定时任务运行一次后退出，并通过 Bark 推送结果摘要。推荐流程是：安装依赖、配置 Redis、写入账号任务、在 Arcadia 中配置定时运行命令。
 
 ### 1. 安装依赖
 
@@ -21,7 +27,23 @@ python3 -m playwright install chromium
 
 如使用 `LOGIN_METHOD=api` 可以不安装 Playwright 浏览器，但当前更推荐保留默认的 `playwright`。
 
-### 2. 配置环境变量
+### 2. 准备 Redis
+
+程序使用 Redis 保存账号任务、Cookie、上次执行记录和 VIP 领取时间。Arcadia 环境中必须能访问你的 Redis。
+
+在 Redis 中写入账号信息：
+
+```bash
+HSET netease:music:task task1 '{"phone": "your_phone", "password": "your_password"}'
+```
+
+说明：
+- `netease:music:task` 是固定哈希表名。
+- `task1` 是任务标识，多账号时可以写 `task2`、`account_a` 等不同 key。
+- `phone` 和 `password` 是网易云账号登录信息，不要提交到 GitHub。
+- 首次运行成功后，程序会把识别到的 `uid` 和登录 Cookie 写回 Redis。
+
+### 3. 配置 Arcadia 环境变量
 
 可以参考 `.env.example`，在 Arcadia 的环境变量中配置：
 
@@ -35,24 +57,38 @@ ARC_RUN_MODE=all
 ARC_BARK_ON_SUCCESS=1
 ```
 
-`BARK` 支持直接填写 Bark key，也支持填写完整 Bark 推送地址。未配置 `BARK` 时任务不会崩溃，只会跳过推送。
+#### 必填参数
 
-`ARC_RUN_MODE` 可选：
-- `all`：默认，同时执行每日签到和动态分享检查
-- `daily`：只执行每日签到
-- `interval`：只执行动态分享检查
+| 参数 | 示例 | 说明 |
+| --- | --- | --- |
+| `REDIS_URL` | `redis://192.168.1.10:6379/5` | Redis 连接地址；如果有密码可写成 `redis://:password@host:6379/5` |
+| `LOGIN_METHOD` | `playwright` | 建议固定为 `playwright`，网页登录更稳 |
+| `BARK` | `your-bark-key` | Bark 推送 key；也可以填完整 Bark URL |
 
-### 3. 添加账号任务
+#### 推荐参数
 
-在 Redis 中写入账号信息：
+| 参数 | 推荐值 | 说明 |
+| --- | --- | --- |
+| `PLAYWRIGHT_PROFILE_BASEDIR` | `.playwright_profiles` | 保存网页登录态，建议持久化这个目录 |
+| `PLAYWRIGHT_PROFILE_PER_USER` | `1` | 多账号独立 profile，避免 Cookie 串号 |
+| `EXECUTION_INTERVAL_DAYS` | `3` | 动态分享任务间隔天数 |
+| `MAX_MONTHLY_SENDS` | `4` | 每月最多分享次数 |
+| `ARC_RUN_MODE` | `all` | Arcadia 单次运行模式 |
+| `ARC_BARK_ON_SUCCESS` | `1` | 成功时也推送 Bark；失败总会尝试推送 |
+| `ARC_BARK_TITLE` | `网易音乐人任务` | Bark 标题前缀 |
 
-```bash
-HSET netease:music:task task1 '{"phone": "your_phone", "password": "your_password"}'
-```
+`ARC_RUN_MODE` 可选值：
+- `all`：默认，同时执行每日签到和动态分享检查。
+- `daily`：只执行每日签到、音乐人签到等每日任务。
+- `interval`：只执行动态分享、VIP 权益检查等间隔任务。
 
-不要把真实账号、密码、Bark key 写入源码、README 或提交记录。
+`BARK` 支持两种写法：
+- 只填 Bark key：程序默认请求 `https://api.day.app/<key>`。
+- 填完整地址：例如自建 Bark 服务地址。
 
-### 4. 配置 Arcadia 入口
+未配置 `BARK` 时任务不会崩溃，只会跳过推送。
+
+### 4. 在 Arcadia 中配置运行命令
 
 优先使用 Python 入口：
 
@@ -66,7 +102,36 @@ python3 arcadia_run.py
 node arcadia.js
 ```
 
+如果 Arcadia 默认 `python3` 不是 Python 3.10-3.12，可以在 Arcadia 里设置 `PYTHON` 环境变量，让 Node 包装入口调用指定解释器：
+
+```bash
+PYTHON=/path/to/python3.12
+node arcadia.js
+```
+
 两个入口都会调用同一套任务逻辑。`arcadia_run.py` 会收集关键日志并在结束时通过 Bark 推送“成功/失败、耗时、关键结果摘要”；`arcadia.js` 只负责启动 Python，并在 Python 不可用时通过 Bark 发送启动失败通知。
+
+### 5. 建议的 Arcadia 定时方式
+
+建议每天运行 1 次，例如上午 9 点到 10 点之间。程序内部会根据 `EXECUTION_INTERVAL_DAYS` 和 `MAX_MONTHLY_SENDS` 判断是否真的执行动态分享，不满足条件时只会跳过分享并推送摘要。
+
+如果你只想每天签到，不想发动态：
+
+```bash
+ARC_RUN_MODE=daily
+```
+
+如果你想把签到和动态分享拆成两个 Arcadia 任务：
+- 任务 A：`ARC_RUN_MODE=daily`，每天早上运行。
+- 任务 B：`ARC_RUN_MODE=interval`，每天稍晚运行。
+
+### 6. 运行结果怎么看
+
+运行后可以看：
+- Bark 推送：本次状态、耗时、关键日志摘要。
+- `log/netease_music.log`：核心业务日志。
+- `log/netease_music_cron.log`：入口和任务调度相关日志。
+- `debug/{手机号}/`：网页登录、滑块、二次验证失败时的截图。
 
 ## 快速开始
 
@@ -364,6 +429,9 @@ docker run -d --name netease-musician-task \
 ```
 netease-musician-task/
 ├── main.py                 # 定时任务入口
+├── arcadia_run.py          # Arcadia Python 单次运行入口
+├── arcadia.js              # Arcadia Node 包装入口
+├── arcadia_notify.py       # Bark 通知封装
 ├── core.py                 # 登录、任务、API 封装
 ├── config.py               # 环境变量与 Redis 初始化
 ├── checkToken.js           # checkToken 生成（需 Node/execjs）
