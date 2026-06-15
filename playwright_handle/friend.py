@@ -37,6 +37,49 @@ def _first_with_selector(page: Page, selector: str) -> Frame | Page:
     return page
 
 
+def _wait_for_selector_in_scopes(
+    page: Page,
+    selector: str,
+    *,
+    timeout_ms: int = 15000,
+    state: str = "visible",
+) -> tuple[Page | Frame, object]:
+    """等待某个 selector 出现在任意 frame 中，并返回匹配到的 scope 和 locator。"""
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_error = None
+
+    while time.monotonic() < deadline:
+        for scope in _scopes(page):
+            try:
+                locator = scope.locator(selector).first
+                if locator.count() > 0:
+                    locator.wait_for(state=state, timeout=1000)
+                    return scope, locator
+            except Exception as e:
+                last_error = e
+                continue
+        time.sleep(0.25)
+
+    _log_page_snapshot(page, f"等待选择器超时: {selector}")
+    raise TimeoutError(f"等待选择器超时: {selector}; last_error={last_error}")
+
+
+def _log_page_snapshot(page: Page, reason: str) -> None:
+    """记录轻量页面快照，避免失败时只有一个 Playwright timeout。"""
+    try:
+        logger.warning(f"{reason}；当前页面 URL={page.url}，title={page.title()}")
+    except Exception as e:
+        logger.warning(f"{reason}；读取页面基础信息失败：{e}")
+
+    for index, scope in enumerate(_scopes(page)):
+        try:
+            text = scope.locator("body").inner_text(timeout=1000)
+            text = " ".join(text.split())[:500]
+            logger.warning(f"{reason}；scope[{index}] 可见文本片段：{text}")
+        except Exception:
+            continue
+
+
 def _cookies_to_cookie_str(cookies: list[dict]) -> str:
     """将 Playwright cookies 转为 requests/NeteaseClient 使用的 cookie_str。"""
     pairs = []
@@ -312,13 +355,17 @@ def share_note_and_delete(
             logger.info("已输入笔记内容")
 
             # 4. 点击「给笔记配上音乐」
-            scope.get_by_text("给笔记配上音乐", exact=True).click()
+            add_music_btn = scope.get_by_text("给笔记配上音乐", exact=True)
+            add_music_btn.wait_for(state="visible", timeout=15000)
+            add_music_btn.click()
             logger.info("已点击给笔记配上音乐")
 
             # 5. 搜索并选择第一首
-            search_scope = _first_with_selector(page, ".m-lysearch")
-            search_input = search_scope.locator(".m-lysearch input.u-txt.txt.j-flag").first
-            search_input.wait_for(state="visible", timeout=15000)
+            search_scope, search_input = _wait_for_selector_in_scopes(
+                page,
+                ".m-lysearch input.u-txt.txt.j-flag",
+                timeout_ms=30000,
+            )
             search_input.fill(search_keyword)
             search_input.press("Enter")
             logger.info(f"已在搜索框输入“{search_keyword}”并回车")
