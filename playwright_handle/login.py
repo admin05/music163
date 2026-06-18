@@ -263,11 +263,43 @@ def _refresh_yidun_captcha(scope) -> bool:
         if refresh.count() <= 0:
             logger.warning("[滑块] 未找到刷新按钮")
             return False
+        try:
+            refresh.wait_for(state="visible", timeout=1500)
+        except Exception:
+            pass
         refresh.click(timeout=2000, force=True)
         time.sleep(2)
         return True
     except Exception as e:
         logger.warning(f"[滑块] 刷新验证码失败，跳过后续刷新等待：{e}")
+        return False
+
+
+def _is_login_form_visible(page: Page | Frame) -> bool:
+    try:
+        for scope in _scopes(page):
+            phone_input = scope.locator("input[placeholder='请输入手机号']")
+            password_input = scope.locator("input[placeholder='请输入密码']")
+            login_btn = scope.locator("a:has(div:has-text('登录'))")
+            if phone_input.count() > 0 and password_input.count() > 0 and login_btn.count() > 0:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _retrigger_login_submit(page: Page | Frame, phone: str, password: str) -> bool:
+    if not _is_login_form_visible(page):
+        return False
+    try:
+        _fill_first(page, "input[placeholder='请输入手机号']", phone, timeout=5000)
+        _fill_first(page, "input[placeholder='请输入密码']", password, timeout=5000)
+        _click_first(page, "a:has(div:has-text('登录'))", timeout=5000)
+        logger.info("[登录] 检测到已回到登录表单，重新点击登录以再次触发验证")
+        time.sleep(1)
+        return True
+    except Exception as e:
+        logger.warning(f"[登录] 尝试重新提交登录表单失败：{e}")
         return False
 
 
@@ -311,7 +343,14 @@ def _check_first(page: Page | Frame, selector: str, *, timeout: int = 15000):
     raise last_err or RuntimeError(f"无法勾选：{selector}")
 
 
-def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone: Optional[str] = None):
+def solve_slider_captcha(
+    page: Page | Frame,
+    max_retry: int = 3,
+    *,
+    debug_phone: Optional[str] = None,
+    phone: Optional[str] = None,
+    password: Optional[str] = None,
+):
     """
     网易云 yidun 滑块高成功率版本（修复 OpenCV 尺寸断言错误）
     - 真滑块判断（naturalWidth）
@@ -566,6 +605,8 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
                 slider = scope.locator(".yidun_slider__icon").first
                 box = slider.bounding_box()
                 if not box:
+                    if phone and password and _retrigger_login_submit(page, phone, password):
+                        break
                     raise RuntimeError("无法获取滑块位置，跳过本次拖动")
 
                 start_x = box["x"] + box["width"] / 2
@@ -600,20 +641,23 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
                 # 验证失败，刷新验证码后重试：必须 break 出内层 scope 循环，下一轮 attempt 再重新扫 scope 等新图
                 if attempt < max_retry:
                     logger.info(f"[滑块] 第 {attempt} 次失败，刷新验证码重试")
-                    _refresh_yidun_captcha(scope)
+                    if not _refresh_yidun_captcha(scope) and phone and password:
+                        _retrigger_login_submit(page, phone, password)
                 break  # 跳出 for scope，进入下一 attempt，重新从第一个 scope 开始等新图
             except cv2.error as e:
                 # 捕获 OpenCV 相关错误，单独兜底
                 logger.warning(f"[滑块] OpenCV 处理失败：{str(e)}，跳过本次尝试")
                 if attempt < max_retry:
-                    _refresh_yidun_captcha(scope)
+                    if not _refresh_yidun_captcha(scope) and phone and password:
+                        _retrigger_login_submit(page, phone, password)
                     time.sleep(1)
                 break
             except Exception as e:
                 # 捕获其他所有异常，避免流程中断
                 logger.warning(f"[滑块] 第 {attempt} 次尝试失败：{str(e)}")
                 if attempt < max_retry:
-                    _refresh_yidun_captcha(scope)
+                    if not _refresh_yidun_captcha(scope) and phone and password:
+                        _retrigger_login_submit(page, phone, password)
                 break
 
         if not handled_scope:
@@ -842,7 +886,7 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
             raise
 
         try:
-            solve_slider_captcha(page, debug_phone=phone)
+            solve_slider_captcha(page, debug_phone=phone, phone=phone, password=password)
         except NeteaseLoginNetworkRiskError:
             context.close()
             raise
@@ -869,7 +913,7 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
             # 只有检测到滑块容器时才处理滑块
             if _has_yidun_slider_modal(page):
                 try:
-                    solve_slider_captcha(page, debug_phone=phone)
+                    solve_slider_captcha(page, debug_phone=phone, phone=phone, password=password)
                 except NeteaseLoginNetworkRiskError:
                     context.close()
                     raise
