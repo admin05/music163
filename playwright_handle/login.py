@@ -23,6 +23,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from playwright.sync_api import sync_playwright, Page, Frame
 
+from arcadia_notify import send_bark
 from core import NeteaseClient  # 仅用于本模块内部根据 Cookie 识别 uid
 from playwright_handle.browser import (
     chromium_context_options,
@@ -61,6 +62,26 @@ def _phone_debug_subdir(phone: str) -> str:
     """用于 debug 目录名，避免路径非法字符。"""
     s = re.sub(r"[^\d+]+", "_", (phone or "").strip())
     return s.strip("_") or "unknown"
+
+
+def _send_secondary_verification_bark(phone: str, qr_url: str) -> None:
+    masked_phone = (phone or "").strip()
+    if len(masked_phone) >= 7:
+        masked_phone = f"{masked_phone[:3]}****{masked_phone[-4:]}"
+    title = "网易云登录需要扫码验证"
+    body = (
+        f"账号：{masked_phone or '未知账号'}\n"
+        "请立即用手机网易云音乐 App 扫码确认本次登录。\n"
+        f"二维码：{qr_url}"
+    )
+    try:
+        ok = send_bark(title, body, level="timeSensitive")
+        if ok:
+            logger.info("[二次验证] 已通过 Bark 推送扫码链接到手机")
+        else:
+            logger.warning("[二次验证] Bark 推送扫码链接失败或未配置 BARK")
+    except Exception as e:
+        logger.warning(f"[二次验证] Bark 推送扫码链接异常：{e}")
 
 
 def save_login_debug_screenshot(page: Page | Frame, phone: str, tag: str) -> Optional[str]:
@@ -670,7 +691,13 @@ def solve_slider_captcha(
     return False
 
 
-def check_secondary_verification(page: Page | Frame, timeout: int = 10, *, auto_action: bool = True) -> bool:
+def check_secondary_verification(
+    page: Page | Frame,
+    timeout: int = 10,
+    *,
+    auto_action: bool = True,
+    phone: Optional[str] = None,
+) -> bool:
     """
     检查是否需要二次验证（登录安全验证弹窗）。
     如果出现二次验证弹窗，记录日志并返回 True。
@@ -734,6 +761,8 @@ def check_secondary_verification(page: Page | Frame, timeout: int = 10, *, auto_
                                                 + urllib.parse.quote(qr_uri, safe="")
                                             )
                                             logger.warning(f"[二次验证] 扫码二维码链接：{qr_url}")
+                                            if phone:
+                                                _send_secondary_verification_bark(phone, qr_url)
                                             # 标记：已进入扫码验证流程，后续应至少等待一段时间给用户扫码
                                             try:
                                                 setattr(pw_page, "_secondary_scan_started_at", time.time())
@@ -930,7 +959,7 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
         # 滑块验证完成后，检查是否需要二次验证
         secondary_verified = True
         try:
-            needs_secondary = check_secondary_verification(page, timeout=10)
+            needs_secondary = check_secondary_verification(page, timeout=10, phone=phone)
             if needs_secondary:
                 secondary_verified = False
                 logger.warning("[登录] 检测到需要二次验证，等待用户手动完成...")
@@ -944,7 +973,7 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
                     scan_deadline = time.time() + 60
                     while time.time() < scan_deadline:
                         # 被动检测：不重复点击/不重复生成二维码
-                        still_needs_scan = check_secondary_verification(page, timeout=2, auto_action=False)
+                        still_needs_scan = check_secondary_verification(page, timeout=2, auto_action=False, phone=phone)
                         if not still_needs_scan:
                             logger.info("[登录] 二次验证已完成（扫码），继续登录流程")
                             secondary_verified = True
@@ -954,7 +983,7 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
                 # 循环检查，最多等待 120 秒，直到二次验证弹窗消失（被动检测）
                 secondary_deadline = time.time() + 120
                 while time.time() < secondary_deadline:
-                    still_needs = check_secondary_verification(page, timeout=2, auto_action=False)
+                    still_needs = check_secondary_verification(page, timeout=2, auto_action=False, phone=phone)
                     if not still_needs:
                         logger.info("[登录] 二次验证已完成，继续登录流程")
                         secondary_verified = True
