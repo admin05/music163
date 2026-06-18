@@ -390,6 +390,8 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
         logger.warning(f"[滑块] ddddocr 不可用，将仅使用 OpenCV 兜底匹配：{e}")
     import cv2
     import numpy as np
+    from io import BytesIO
+    from PIL import Image
 
     def detect_gap_candidates(bg_img_gray):
         """从背景图里直接找拼图轮廓。"""
@@ -421,6 +423,42 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
 
         candidates.sort(key=lambda item: (item["x"], item["area"]))
         return candidates
+
+    def detect_slider_shape_offset(slider_bytes_raw, bg_img_gray):
+        """利用滑块 PNG 的透明轮廓在背景图里找目标缺口。"""
+        try:
+            slider_rgba = Image.open(BytesIO(slider_bytes_raw)).convert("RGBA")
+            alpha = np.array(slider_rgba.split()[-1])
+        except Exception as e:
+            logger.warning(f"[滑块] 解析滑块 alpha 失败：{e}")
+            return None
+
+        alpha_mask = (alpha > 40).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(alpha_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < 20 or h < 40:
+            return None
+
+        shape_mask = alpha_mask[y:y + h, x:x + w]
+        bg_edges = cv2.Canny(bg_img_gray, 80, 160)
+        bg_edges = cv2.GaussianBlur(bg_edges, (3, 3), 0)
+        shape_edges = cv2.Canny(shape_mask, 80, 160)
+
+        if bg_edges.shape[1] < shape_edges.shape[1] or bg_edges.shape[0] < shape_edges.shape[0]:
+            return None
+
+        result = cv2.matchTemplate(bg_edges, shape_edges, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        return {
+            "score": float(max_val),
+            "x": float(max_loc[0]),
+            "w": float(w),
+            "h": float(h),
+        }
 
     for attempt in range(1, max_retry + 1):
         logger.info(f"[滑块] 第 {attempt} 次尝试")
@@ -481,6 +519,19 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
                     _, max_val, _, max_loc = cv2.minMaxLoc(result)
                     target_x = max_loc[0]
                     logger.info(f"[滑块] OpenCV 匹配得分：{max_val:.4f}，原始位移：{target_x:.2f} 像素")
+
+                slider_shape_match = detect_slider_shape_offset(slider_bytes, bg_img)
+                if slider_shape_match:
+                    shape_target_x = slider_shape_match["x"]
+                    logger.info(
+                        f"[滑块] alpha 轮廓匹配：x={shape_target_x:.2f}, score={slider_shape_match['score']:.4f}, "
+                        f"w={slider_shape_match['w']:.0f}, h={slider_shape_match['h']:.0f}"
+                    )
+                    if abs(shape_target_x - target_x) > 15:
+                        logger.info(
+                            f"[滑块] 使用 alpha 轮廓修正位移：ocr={target_x:.2f} -> alpha={shape_target_x:.2f}"
+                        )
+                        target_x = shape_target_x
 
                 gap_candidates = detect_gap_candidates(bg_img)
                 if gap_candidates:
