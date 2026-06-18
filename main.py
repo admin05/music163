@@ -8,6 +8,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 # 导入项目核心模块
 from core import AuthManager, TaskManager, logger
+from core import NeteaseClient
 
 # 从配置文件导入所有配置
 from config import (
@@ -60,10 +61,22 @@ except Exception as e:
     storage = None
 
 VIP_FURTHER_GET_TIME_KEY_TPL = "netease:music:user:{uid}:vip:furtherVipGetTime"
+RUN_FRESH_COOKIE_BY_UID: dict[str, str] = {}
 
 
 def _vip_key(user_uid) -> str:
     return VIP_FURTHER_GET_TIME_KEY_TPL.format(uid=str(user_uid))
+
+
+def _remember_run_fresh_cookie(user_uid, cookie_str: str) -> None:
+    if user_uid and cookie_str:
+        RUN_FRESH_COOKIE_BY_UID[str(user_uid)] = cookie_str
+
+
+def _get_run_fresh_cookie(user_uid) -> str | None:
+    if not user_uid:
+        return None
+    return RUN_FRESH_COOKIE_BY_UID.get(str(user_uid))
 
 
 def get_vip_further_get_time_ms(user_uid) -> int | None:
@@ -354,6 +367,16 @@ def daily_task_runner():
                                 client = new_client
                                 task = TaskManager(client)
                             return False
+                        fresh_cookie_from_browser = musician_cycle_missions_res.get("_fresh_cookie_str")
+                        if fresh_cookie_from_browser:
+                            try:
+                                client = NeteaseClient(cookie_str=fresh_cookie_from_browser, uid=user.get("uid"))
+                                task = TaskManager(client)
+                                auth.update_cookie(user['uid'], fresh_cookie_from_browser)
+                                _remember_run_fresh_cookie(user['uid'], fresh_cookie_from_browser)
+                                logger.info(f"用户 {user['uid']} 音乐人任务已复用浏览器最新 Cookie")
+                            except Exception as e:
+                                logger.warning(f"同步浏览器最新 Cookie 到当前任务失败: {e}")
                         if musician_cycle_missions_res.get('code') == 200:
                             musician_cycle_missions_data = musician_cycle_missions_res.get('data', {})
                             musician_cycle_missions_list = musician_cycle_missions_data.get('list', [])
@@ -418,6 +441,7 @@ def daily_task_runner():
                             fresh_cookie = client.get_cookie_str()
                             if fresh_cookie:
                                 auth.update_cookie(user['uid'], fresh_cookie)
+                                _remember_run_fresh_cookie(user['uid'], fresh_cookie)
                                 logger.info(f"用户 {user['uid']} 每日任务完成，已更新 Cookie 到 SQLite")
                         except Exception as e:
                             logger.warning(f"更新用户 {user['uid']} Cookie失败: {e}")
@@ -690,8 +714,16 @@ def interval_task_runner():
                     continue
 
                 client = None
+                remembered_cookie = _get_run_fresh_cookie(user_uid)
+                if remembered_cookie:
+                    try:
+                        client = NeteaseClient(cookie_str=remembered_cookie, uid=user.get('uid'))
+                        logger.info(f"用户 {user_uid} 复用本轮刚刷新的浏览器 Cookie 执行发布动态任务")
+                    except Exception as e:
+                        logger.warning(f"复用本轮浏览器 Cookie 失败: {e}")
+                        client = None
                 # 1. 尝试使用 SQLite 中保存的 Cookie
-                if user['uid'] and str(user['uid']) != str(user['phone']):
+                if not client and user['uid'] and str(user['uid']) != str(user['phone']):
                     client = auth.get_client_by_uid(user['uid'])
 
                 # 2. 失败则登录（仅当 LOGIN_METHOD=api 时才会真正走接口）
@@ -764,11 +796,13 @@ def interval_task_runner():
                         try:
                             if LOGIN_METHOD == 'playwright' and fresh_cookie_from_browser:
                                 auth.update_cookie(user['uid'], fresh_cookie_from_browser)
+                                _remember_run_fresh_cookie(user['uid'], fresh_cookie_from_browser)
                                 logger.info(f"用户 {user['uid']} 发布动态任务完成，已从浏览器更新 Cookie 到 SQLite")
                             else:
                                 fresh_cookie = client.get_cookie_str()
                                 if fresh_cookie:
                                     auth.update_cookie(user['uid'], fresh_cookie)
+                                    _remember_run_fresh_cookie(user['uid'], fresh_cookie)
                                     logger.info(f"用户 {user['uid']} 发布动态任务完成，已更新 Cookie 到 SQLite")
                         except Exception as e:
                             logger.warning(f"更新用户 {user['uid']} Cookie失败: {e}")

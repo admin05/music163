@@ -420,6 +420,9 @@ def get_musician_cycle_mission_by_playwright(
         except Exception as e:
             logger.error(f"Playwright 登录失败：{e}")
             return {"code": 301, "msg": f"playwright login failed: {e}"}
-        return _run_once(new_cookie_str)
+        retry_res = _run_once(new_cookie_str)
+        if isinstance(retry_res, dict):
+            retry_res["_fresh_cookie_str"] = new_cookie_str
+        return retry_res
 
     return res
