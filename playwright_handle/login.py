@@ -392,7 +392,7 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
     import numpy as np
 
     def detect_gap_candidates(bg_img_gray):
-        """从背景图里直接找拼图轮廓，优先取右侧缺口。"""
+        """从背景图里直接找拼图轮廓。"""
         edges = cv2.Canny(bg_img_gray, 80, 160)
         kernel = np.ones((3, 3), np.uint8)
         edges = cv2.dilate(edges, kernel, iterations=1)
@@ -491,13 +491,20 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
                             for item in gap_candidates[:4]
                         ),
                     )
+                    leftmost_piece = min(gap_candidates, key=lambda item: item["x"])
                     rightmost_gap = max(gap_candidates, key=lambda item: item["x"])
+                    piece_start_x = float(leftmost_piece["x"])
                     gap_target_x = float(rightmost_gap["x"])
-                    if abs(gap_target_x - target_x) > 18:
+                    gap_drag_distance = max(0.0, gap_target_x - piece_start_x)
+                    logger.info(
+                        f"[滑块] 轮廓推断：piece_start={piece_start_x:.2f}, gap_target={gap_target_x:.2f}, "
+                        f"drag_distance={gap_drag_distance:.2f}"
+                    )
+                    if abs(gap_drag_distance - target_x) > 18:
                         logger.info(
-                            f"[滑块] 使用背景缺口坐标修正位移：ocr={target_x:.2f} -> gap={gap_target_x:.2f}"
+                            f"[滑块] 使用轮廓推断修正位移：ocr={target_x:.2f} -> gap_delta={gap_drag_distance:.2f}"
                         )
-                        target_x = gap_target_x
+                        target_x = gap_drag_distance
 
                 # 小尺寸 yidun 偏移修正（关键）
                 target_x *= 1.03
