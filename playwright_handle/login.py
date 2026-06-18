@@ -24,13 +24,21 @@ if _PROJECT_ROOT not in sys.path:
 from playwright.sync_api import sync_playwright, Page, Frame
 
 from core import NeteaseClient  # 仅用于本模块内部根据 Cookie 识别 uid
-from playwright_handle.browser import chromium_context_options
+from playwright_handle.browser import (
+    chromium_context_options,
+    launch_persistent_context_with_retry,
+    resolve_profile_dir,
+)
 
 logger = logging.getLogger("netease_music")
 
 
 class NeteaseLoginNetworkRiskError(RuntimeError):
     """页面提示网络环境安全风险时抛出，避免被滑块流程的 broad except 吞掉。"""
+
+
+class NeteaseSecondaryVerificationRequiredError(RuntimeError):
+    """登录被二次验证拦截且在等待窗口内未完成。"""
 
 
 # ======== 按需修改这里（作为脚本单独运行时使用） ========
@@ -385,9 +393,17 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
 
     for attempt in range(1, max_retry + 1):
         logger.info(f"[滑块] 第 {attempt} 次尝试")
+        handled_scope = False
 
         for scope in _scopes(page):
             try:
+                if (
+                    scope.locator(".yidun_modal__body, .yidun.yidun-custom").count() == 0
+                    or scope.locator(".yidun_slider__icon").count() == 0
+                ):
+                    continue
+                handled_scope = True
+
                 # 等待真实图片加载（避免加载占位图）
                 wait_real_image(scope, "img.yidun_bg-img")
                 wait_real_image(scope, "img.yidun_jigsaw", min_width=40)
@@ -479,21 +495,29 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
                 if attempt < max_retry:
                     logger.info(f"[滑块] 第 {attempt} 次失败，刷新验证码重试")
                     _refresh_yidun_captcha(scope)
-                    break  # 跳出 for scope，进入下一 attempt，重新从第一个 scope 开始等新图
+                break  # 跳出 for scope，进入下一 attempt，重新从第一个 scope 开始等新图
             except cv2.error as e:
                 # 捕获 OpenCV 相关错误，单独兜底
                 logger.warning(f"[滑块] OpenCV 处理失败：{str(e)}，跳过本次尝试")
                 if attempt < max_retry:
+                    _refresh_yidun_captcha(scope)
                     time.sleep(1)
-                continue
+                break
             except Exception as e:
                 # 捕获其他所有异常，避免流程中断
                 logger.warning(f"[滑块] 第 {attempt} 次尝试失败：{str(e)}")
-                continue
+                if attempt < max_retry:
+                    _refresh_yidun_captcha(scope)
+                break
+
+        if not handled_scope:
+            logger.warning("[滑块] 当前未找到可操作的滑块容器或拖块元素")
+            break
 
     logger.error(f"[滑块] 累计 {max_retry} 次尝试均失败，放弃滑块验证（请手动完成或检查网络/验证码样式）")
     if debug_phone:
         save_login_debug_screenshot(page, debug_phone, "slider_failed")
+    return False
 
 
 def check_secondary_verification(page: Page | Frame, timeout: int = 10, *, auto_action: bool = True) -> bool:
@@ -510,11 +534,13 @@ def check_secondary_verification(page: Page | Frame, timeout: int = 10, *, auto_
         for scope in _scopes(page):
             try:
                 modal = scope.locator(".mrc-modal-container")
-                title = scope.get_by_text("登录安全验证", exact=False)
 
                 # 有时弹窗标题文案会变化，不能强依赖 title；只要容器存在就认为进入二次验证流程
                 if modal.count() > 0:
-                    logger.warning("[二次验证] 检测到登录安全验证弹窗，需要额外验证")
+                    if auto_action:
+                        logger.warning("[二次验证] 检测到登录安全验证弹窗，需要额外验证")
+                    else:
+                        logger.info("[二次验证] 登录安全验证弹窗仍存在，继续等待用户完成验证")
                     pw_page: Page = page if isinstance(page, Page) else page.page
 
                     if not auto_action:
@@ -667,10 +693,11 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
         raise ValueError("phone/password 不能为空")
 
     os.makedirs(os.path.join(_PROJECT_ROOT, "log"), exist_ok=True)
-    profile_dir = os.path.join(profile_dir, phone)
+    profile_dir = resolve_profile_dir(profile_dir, phone)
     with sync_playwright() as p:
         # 反检测配置（保守版本，避免破坏页面功能）
-        context = p.chromium.launch_persistent_context(
+        context = launch_persistent_context_with_retry(
+            p,
             **chromium_context_options(
                 user_data_dir=profile_dir,
                 headless=headless,
@@ -751,9 +778,11 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
             raise
 
         # 滑块验证完成后，检查是否需要二次验证
+        secondary_verified = True
         try:
             needs_secondary = check_secondary_verification(page, timeout=10)
             if needs_secondary:
+                secondary_verified = False
                 logger.warning("[登录] 检测到需要二次验证，等待用户手动完成...")
                 # 扫码验证：最多等 60 秒，每 5 秒检查一次；用户提前完成就立刻继续
                 try:
@@ -768,6 +797,7 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
                         still_needs_scan = check_secondary_verification(page, timeout=2, auto_action=False)
                         if not still_needs_scan:
                             logger.info("[登录] 二次验证已完成（扫码），继续登录流程")
+                            secondary_verified = True
                             break
                         time.sleep(5)
 
@@ -777,14 +807,19 @@ def browser_login(phone: str, password: str, profile_dir: str = PROFILE_DIR, hea
                     still_needs = check_secondary_verification(page, timeout=2, auto_action=False)
                     if not still_needs:
                         logger.info("[登录] 二次验证已完成，继续登录流程")
+                        secondary_verified = True
                         break
                     time.sleep(2)
                 else:
-                    logger.warning("[登录] 二次验证等待超时，继续尝试获取 Cookie")
+                    logger.warning("[登录] 二次验证等待超时，登录流程终止")
                     save_login_debug_screenshot(page, phone, "secondary_verify_timeout")
         except Exception as e:
             logger.warning(f"检查二次验证时出错：{e}")
             save_login_debug_screenshot(page, phone, "secondary_verify_error")
+
+        if not secondary_verified:
+            context.close()
+            raise NeteaseSecondaryVerificationRequiredError("登录需要二次验证，等待超时或未完成验证。")
 
         deadline = time.time() + 60
         cookie_str = ""

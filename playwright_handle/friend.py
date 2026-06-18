@@ -11,7 +11,7 @@ import time
 from playwright.sync_api import sync_playwright, Page, Frame
 
 from core import logger, NeteaseClient, TaskManager
-from playwright_handle.browser import chromium_context_options
+from playwright_handle.browser import chromium_context_options, launch_persistent_context_with_retry
 
 FRIEND_URL = "https://music.163.com/#/friend"
 PROFILE_DIR = ".playwright_profile_netease"  # 作为独立脚本运行时使用；集成到 main.py 时会传参覆盖
@@ -241,7 +241,8 @@ def open_vip_right_page_and_listen(
 
     def _run_once(_cookie_str: str | None) -> int | None:
         with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
+            context = launch_persistent_context_with_retry(
+                p,
                 **chromium_context_options(
                     user_data_dir=profile_dir,
                     headless=True,
@@ -315,7 +316,8 @@ def share_note_and_delete(
 
     def _run_once(_cookie_str: str | None) -> tuple[bool, str | None]:
         with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
+            context = launch_persistent_context_with_retry(
+                p,
                 **chromium_context_options(
                     user_data_dir=profile_dir,
                     headless=True,

@@ -16,7 +16,7 @@ from typing import Any
 from playwright.sync_api import Frame, Page, sync_playwright
 
 from core import logger
-from playwright_handle.browser import chromium_context_options
+from playwright_handle.browser import chromium_context_options, launch_persistent_context_with_retry
 
 MUSICIAN_HOME_URL = "https://music.163.com/musician/artist/home"
 
@@ -131,7 +131,8 @@ def open_vip_right_page_and_listen(
     def _run_once(_cookie_str: str | None) -> int | None:
         with sync_playwright() as p:
             # 反检测配置（保守版本）
-            context = p.chromium.launch_persistent_context(
+            context = launch_persistent_context_with_retry(
+                p,
                 **chromium_context_options(
                     user_data_dir=profile_dir,
                     headless=True,
@@ -329,7 +330,8 @@ def get_musician_cycle_mission_by_playwright(
     def _run_once(_cookie_str: str | None) -> dict[str, Any]:
         with sync_playwright() as p:
             # 反检测配置（保守版本）
-            context = p.chromium.launch_persistent_context(
+            context = launch_persistent_context_with_retry(
+                p,
                 **chromium_context_options(
                     user_data_dir=profile_dir,
                     headless=True,

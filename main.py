@@ -228,6 +228,9 @@ def retry_with_backoff(func, max_retries=3, delay=2, task_name="任务"):
                     logger.error(f"{task_name} 执行失败，已达最大重试次数 {max_retries} 次")
                     return None
             return result
+        except StopRetry as e:
+            logger.error(f"{task_name} 终止重试：{e}")
+            return None
         except Exception as e:
             if attempt < max_retries - 1:
                 logger.warning(f"{task_name} 执行异常: {e}，{delay}秒后进行第 {attempt + 2} 次重试（共{max_retries}次）")
@@ -237,6 +240,11 @@ def retry_with_backoff(func, max_retries=3, delay=2, task_name="任务"):
                 logger.error(f"{task_name} 执行异常，已达最大重试次数 {max_retries} 次: {e}")
                 return None
     return None
+
+
+class StopRetry(Exception):
+    """用于标记不应继续重试的失败场景。"""
+
 
 def daily_task_runner():
     """每日任务执行函数（日常签到、音乐人签到等）"""
@@ -387,6 +395,9 @@ def daily_task_runner():
                         else:
                             logger.error(f"获取音乐人循环任务失败：{json.dumps(musician_cycle_missions_res, ensure_ascii=False)[:100]}")
                             musician_checkin_res = musician_cycle_missions_res
+                            msg = str(musician_cycle_missions_res.get("msg") or "")
+                            if musician_cycle_missions_res.get("code") == 301 and "二次验证" in msg:
+                                raise StopRetry(msg)
                             return False  # 返回False触发重试
 
                     # 使用重试机制执行音乐人签到任务
@@ -733,6 +744,9 @@ def interval_task_runner():
                             return True
                         else:
                             logger.warning(f"发布动态失败：{json.dumps(share_res, ensure_ascii=False)[:100]}")
+                            msg = str(share_res.get("msg") or "")
+                            if share_res.get("code") == 301 and "二次验证" in msg:
+                                raise StopRetry(msg)
                             return False  # 返回False触发重试
 
                     # 使用重试机制执行发布动态任务
