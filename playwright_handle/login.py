@@ -391,6 +391,37 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
     import cv2
     import numpy as np
 
+    def detect_gap_candidates(bg_img_gray):
+        """从背景图里直接找拼图轮廓，优先取右侧缺口。"""
+        edges = cv2.Canny(bg_img_gray, 80, 160)
+        kernel = np.ones((3, 3), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        candidates: list[dict] = []
+        img_h, img_w = bg_img_gray.shape[:2]
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            area = cv2.contourArea(contour)
+            if w < 28 or h < 45 or w > 95 or h > 140:
+                continue
+            if area < 600 or area > 5000:
+                continue
+            if x <= 0 or y <= 0 or x + w >= img_w or y + h >= img_h:
+                continue
+            candidates.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h,
+                    "area": area,
+                }
+            )
+
+        candidates.sort(key=lambda item: (item["x"], item["area"]))
+        return candidates
+
     for attempt in range(1, max_retry + 1):
         logger.info(f"[滑块] 第 {attempt} 次尝试")
         handled_scope = False
@@ -450,6 +481,23 @@ def solve_slider_captcha(page: Page | Frame, max_retry: int = 3, *, debug_phone:
                     _, max_val, _, max_loc = cv2.minMaxLoc(result)
                     target_x = max_loc[0]
                     logger.info(f"[滑块] OpenCV 匹配得分：{max_val:.4f}，原始位移：{target_x:.2f} 像素")
+
+                gap_candidates = detect_gap_candidates(bg_img)
+                if gap_candidates:
+                    logger.info(
+                        "[滑块] 背景轮廓候选：%s",
+                        ", ".join(
+                            f"x={item['x']},y={item['y']},w={item['w']},h={item['h']}"
+                            for item in gap_candidates[:4]
+                        ),
+                    )
+                    rightmost_gap = max(gap_candidates, key=lambda item: item["x"])
+                    gap_target_x = float(rightmost_gap["x"])
+                    if abs(gap_target_x - target_x) > 18:
+                        logger.info(
+                            f"[滑块] 使用背景缺口坐标修正位移：ocr={target_x:.2f} -> gap={gap_target_x:.2f}"
+                        )
+                        target_x = gap_target_x
 
                 # 小尺寸 yidun 偏移修正（关键）
                 target_x *= 1.03
